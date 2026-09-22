@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>ShadowStat — {{.HostIP}}</title>
+  <title>ShadowStat — {{if .HostDisplayName}}{{.HostDisplayName}}{{else}}{{.HostIP}}{{end}}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0f1115">
   <link rel="stylesheet" href="/static/vendor/uplot/uPlot.min.css">
@@ -11,6 +11,12 @@
 <body>
   {{template "nav" .}}
   <main data-host-id="{{.HostID}}">
+    <dl class="device-info">
+      {{if .HostDisplayName}}<div><dt>Name</dt><dd>{{.HostDisplayName}}</dd></div>{{end}}
+      <div><dt>IP</dt><dd>{{.HostIP}}</dd></div>
+      {{if .HostMAC}}<div><dt>MAC</dt><dd>{{.HostMAC}}</dd></div>{{end}}
+    </dl>
+
     <div id="host-graph" class="graph"></div>
 
     <h2 class="section-title">Alerts</h2>

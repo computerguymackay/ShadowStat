@@ -14,11 +14,13 @@ type pageHandlers struct {
 // pageVars is passed to every authenticated page template so the shared "nav"
 // partial has a consistent shape to read from regardless of which page included it.
 type pageVars struct {
-	Breadcrumb    string // non-empty on drill-down pages, e.g. a host's IP
-	HostID        int64
-	HostIP        string
-	UnackedAlerts int
-	OnAlertsPage  bool
+	Breadcrumb      string // non-empty on drill-down pages, e.g. a host's name/IP
+	HostID          int64
+	HostIP          string
+	HostDisplayName string
+	HostMAC         string
+	UnackedAlerts   int
+	OnAlertsPage    bool
 }
 
 func (h *pageHandlers) navVars() pageVars {
@@ -55,9 +57,15 @@ func (h *pageHandlers) hostDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	v := h.navVars()
-	v.Breadcrumb = host.IP
 	v.HostID = host.ID
 	v.HostIP = host.IP
+	v.HostDisplayName = host.DisplayName.String
+	v.HostMAC = host.MACAddress.String
+	if v.HostDisplayName != "" {
+		v.Breadcrumb = v.HostDisplayName
+	} else {
+		v.Breadcrumb = host.IP
+	}
 	renderTemplate(w, "host_detail.html", &v)
 }
 

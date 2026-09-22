@@ -124,6 +124,29 @@ main {
 .section-title { font-size: 1rem; margin: 1.5rem 0 0.75rem; }
 .muted { color: var(--muted); font-weight: 400; }
 
+.device-info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.5rem;
+  margin: 0 0 1.25rem;
+}
+.device-info > div {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+.device-info dt {
+  color: var(--muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.device-info dd {
+  margin: 0;
+  font-size: 0.9rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
 .toggle {
   display: flex;
   align-items: center;
