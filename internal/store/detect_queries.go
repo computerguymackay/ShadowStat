@@ -73,36 +73,43 @@ func (db *DB) HostOutboundTotals(since, now int64) ([]HostByteTotals, error) {
 	return out, rows.Err()
 }
 
-// HostDistinctPeerCount is a host's count of distinct remote (ip, port) pairs
-// contacted within a scan window, used by the port-scan detector.
-type HostDistinctPeerCount struct {
-	HostID int64
-	Count  int
+// TargetPortScan is one (host, single remote IP) pair where the host
+// contacted an unusually large number of distinct ports on that one target —
+// the actual signature of a port scan, as opposed to contacting many
+// different hosts (which is normal multi-service browsing/app traffic and
+// was previously conflated with scanning, causing false positives).
+type TargetPortScan struct {
+	HostID    int64
+	RemoteIP  string
+	PortsCSV  string // comma-separated distinct remote ports, via GROUP_CONCAT; caller parses
+	PortCount int
 }
 
-// HostDistinctPeerCounts returns, for every host with LAN->WAN activity in
-// [since, now], how many distinct remote (ip, port) pairs it contacted.
-func (db *DB) HostDistinctPeerCounts(since, now int64) ([]HostDistinctPeerCount, error) {
+// HostTargetPortScans returns, for every (host, remote IP) pair in [since,
+// now] where the host contacted at least minPorts distinct ports on that one
+// remote IP, the port count and the actual port list (capped to a reasonable
+// size by the caller after parsing PortsCSV).
+func (db *DB) HostTargetPortScans(since, now int64, minPorts int) ([]TargetPortScan, error) {
 	rows, err := db.Reader.Query(
-		`SELECT host_id, COUNT(*) FROM (
-		     SELECT DISTINCT host_id, remote_ip, remote_port
-		     FROM flows_recent
-		     WHERE direction = ? AND last_seen >= ? AND last_seen <= ?
-		 ) GROUP BY host_id`,
-		DirLANToWAN, since, now,
+		`SELECT host_id, remote_ip, COUNT(DISTINCT remote_port) AS port_count, GROUP_CONCAT(DISTINCT remote_port)
+		 FROM flows_recent
+		 WHERE direction = ? AND last_seen >= ? AND last_seen <= ?
+		 GROUP BY host_id, remote_ip
+		 HAVING port_count >= ?`,
+		DirLANToWAN, since, now, minPorts,
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var out []HostDistinctPeerCount
+	var out []TargetPortScan
 	for rows.Next() {
-		var c HostDistinctPeerCount
-		if err := rows.Scan(&c.HostID, &c.Count); err != nil {
+		var t TargetPortScan
+		if err := rows.Scan(&t.HostID, &t.RemoteIP, &t.PortCount, &t.PortsCSV); err != nil {
 			return nil, err
 		}
-		out = append(out, c)
+		out = append(out, t)
 	}
 	return out, rows.Err()
 }

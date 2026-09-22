@@ -28,23 +28,31 @@ func (db *DB) UpsertKnownPeer(hostID int64, remoteIP string, remotePort int, see
 }
 
 // DistinctRecentPeer is one (host, remote peer) pair first contacted within a
-// detector's scan window, used by the new-destination detector.
+// detector's scan window, used by the new-destination detector. HadOutbound/
+// HadInbound distinguish whether the pair's traffic in the window included
+// this host initiating contact (LAN->WAN), the peer reaching in (WAN->LAN),
+// or both (the common case for a normal request/response) — so an alert can
+// say which actually happened instead of leaving it ambiguous.
 type DistinctRecentPeer struct {
-	HostID     int64
-	RemoteIP   string
-	RemotePort int
-	FirstSeen  int64
+	HostID      int64
+	RemoteIP    string
+	RemotePort  int
+	FirstSeen   int64
+	HadOutbound bool
+	HadInbound  bool
 }
 
 // RecentFlowPeers returns the distinct (host, remote peer) pairs with any
 // flows_recent activity in [since, now], across all directions.
 func (db *DB) RecentFlowPeers(since, now int64) ([]DistinctRecentPeer, error) {
 	rows, err := db.Reader.Query(
-		`SELECT host_id, remote_ip, remote_port, MIN(first_seen)
+		`SELECT host_id, remote_ip, remote_port, MIN(first_seen),
+		        MAX(CASE WHEN direction = ? THEN 1 ELSE 0 END),
+		        MAX(CASE WHEN direction = ? THEN 1 ELSE 0 END)
 		 FROM flows_recent
 		 WHERE last_seen >= ? AND last_seen <= ?
 		 GROUP BY host_id, remote_ip, remote_port`,
-		since, now,
+		DirLANToWAN, DirWANToLAN, since, now,
 	)
 	if err != nil {
 		return nil, err
@@ -54,9 +62,11 @@ func (db *DB) RecentFlowPeers(since, now int64) ([]DistinctRecentPeer, error) {
 	var out []DistinctRecentPeer
 	for rows.Next() {
 		var p DistinctRecentPeer
-		if err := rows.Scan(&p.HostID, &p.RemoteIP, &p.RemotePort, &p.FirstSeen); err != nil {
+		var hadOutbound, hadInbound int
+		if err := rows.Scan(&p.HostID, &p.RemoteIP, &p.RemotePort, &p.FirstSeen, &hadOutbound, &hadInbound); err != nil {
 			return nil, err
 		}
+		p.HadOutbound, p.HadInbound = hadOutbound != 0, hadInbound != 0
 		out = append(out, p)
 	}
 	return out, rows.Err()

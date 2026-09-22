@@ -22,6 +22,23 @@ func hostLabel(h *store.Host) string {
 	return h.IP
 }
 
+// classifyPeerDirection turns a peer's observed traffic directions into a
+// machine-readable label (for the alert's detail JSON, which the web UI
+// renders explicitly) and a human summary phrase, so an alert never leaves
+// it ambiguous whether the host initiated contact or was reached into.
+func classifyPeerDirection(hadOutbound, hadInbound bool) (label, phrase string) {
+	switch {
+	case hadOutbound && hadInbound:
+		return "bidirectional", "exchanged traffic with a"
+	case hadOutbound:
+		return "outbound", "contacted a"
+	case hadInbound:
+		return "inbound", "was contacted by a"
+	default:
+		return "unknown", "was linked to a"
+	}
+}
+
 // raiseAlert is a small helper shared by every detector: skip if an alert
 // with the same dedupe key already fired within the cooldown window, marshal
 // detail to JSON, and insert.

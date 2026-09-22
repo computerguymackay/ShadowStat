@@ -72,10 +72,24 @@ func NewDestinations(db *store.DB, now time.Time) {
 			continue // host itself is still new; don't alert on its entire baseline
 		}
 
-		dedupeKey := fmt.Sprintf("%s:%d", p.RemoteIP, p.RemotePort)
-		summary := fmt.Sprintf("%s contacted a new destination %s:%d", hostLabel(host), p.RemoteIP, p.RemotePort)
-		detail := map[string]any{"remote_ip": p.RemoteIP, "remote_port": p.RemotePort}
+		direction, directionPhrase := classifyPeerDirection(p.HadOutbound, p.HadInbound)
 
-		raiseAlert(db, p.HostID, store.AlertKindNewDestination, store.SeverityInfo, summary, detail, dedupeKey, nowUnix, alertCooldown)
+		dedupeKey := fmt.Sprintf("%s:%d", p.RemoteIP, p.RemotePort)
+		summary := fmt.Sprintf("%s %s new destination %s:%d", hostLabel(host), directionPhrase, p.RemoteIP, p.RemotePort)
+		detail := map[string]any{
+			"remote_ip":   p.RemoteIP,
+			"remote_port": p.RemotePort,
+			"direction":   direction,
+		}
+
+		severity := store.SeverityInfo
+		if direction == "inbound" {
+			// An external host reaching in with no corresponding outbound request
+			// from this device is more notable than this device simply browsing
+			// somewhere new — could be an unsolicited probe.
+			severity = store.SeverityWarning
+		}
+
+		raiseAlert(db, p.HostID, store.AlertKindNewDestination, severity, summary, detail, dedupeKey, nowUnix, alertCooldown)
 	}
 }

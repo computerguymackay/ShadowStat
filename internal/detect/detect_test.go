@@ -1,7 +1,9 @@
 package detect
 
 import (
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -217,7 +219,7 @@ func TestExfilRatioIgnoresNormalTraffic(t *testing.T) {
 	}
 }
 
-func TestPortScanFlagsHighFanOut(t *testing.T) {
+func TestPortScanFlagsManyPortsOnOneTarget(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now()
 
@@ -248,6 +250,49 @@ func TestPortScanFlagsHighFanOut(t *testing.T) {
 	}
 	if len(alerts) != 1 || alerts[0].Kind != store.AlertKindPortScan {
 		t.Fatalf("expected 1 port_scan alert, got %+v", alerts)
+	}
+	if !strings.Contains(alerts[0].Detail, `"remote_ip":"10.0.0.1"`) {
+		t.Errorf("expected detail to name the single target, got %q", alerts[0].Detail)
+	}
+	if !strings.Contains(alerts[0].Detail, `"port_count":40`) {
+		t.Errorf("expected detail to include the port count, got %q", alerts[0].Detail)
+	}
+}
+
+func TestPortScanIgnoresManyHostsOnSamePort(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now()
+
+	hostID, err := db.UpsertHost("192.168.1.50", now.Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Classic normal-browsing shape: many different remote hosts, all on 443
+	// — this used to trip the old "distinct (ip,port) pairs" detector even
+	// though it's not scan-like at all (each target only sees one port).
+	var records []store.FlowRecord
+	for i := 0; i < 40; i++ {
+		records = append(records, store.FlowRecord{
+			HostID: hostID, Direction: store.DirLANToWAN, Proto: 6,
+			LocalIP: "192.168.1.50", LocalPort: 5000,
+			RemoteIP: fmt.Sprintf("10.0.%d.1", i), RemotePort: 443,
+			FirstSeen: now.Unix(), LastSeen: now.Unix(),
+			BytesSent: 1000, BytesRecv: 5000, PacketsSent: 5, PacketsRecv: 10,
+		})
+	}
+	if err := db.InsertFlows(records); err != nil {
+		t.Fatal(err)
+	}
+
+	PortScan(db, now)
+
+	alerts, err := db.ListAlertsForHost(hostID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(alerts) != 0 {
+		t.Fatalf("expected no port_scan alert for many-hosts-one-port traffic, got %+v", alerts)
 	}
 }
 

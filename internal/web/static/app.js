@@ -105,6 +105,90 @@
     port_scan: "Port scan",
   };
 
+  // detailRow appends a "label: value" row to a detail <dl>.
+  function detailRow(dl, label, value) {
+    const row = document.createElement("div");
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    row.appendChild(dt);
+    row.appendChild(dd);
+    dl.appendChild(row);
+  }
+
+  // buildAlertDetail parses an alert's JSON detail blob into a human-readable
+  // panel, tailored per detector kind since each has a different shape.
+  // Falls back to raw key/value pairs for anything it doesn't recognize, so
+  // this never hides information even if a field is missing/unexpected.
+  function buildAlertDetail(kind, direction, detailStr) {
+    const dl = document.createElement("dl");
+    dl.className = "alert-detail-fields";
+
+    let d = {};
+    try {
+      d = JSON.parse(detailStr || "{}");
+    } catch (e) {
+      const pre = document.createElement("pre");
+      pre.textContent = detailStr || "(no detail)";
+      return pre;
+    }
+
+    const directionLabels = {
+      outbound: "Outbound — this device initiated the traffic",
+      inbound: "Inbound — a remote host contacted this device (no request from this device seen)",
+      bidirectional: "Bidirectional — this device initiated it, and the peer also responded/reached back",
+      unknown: "Unknown",
+    };
+    detailRow(dl, "Direction", directionLabels[direction] || directionLabels.outbound);
+
+    switch (kind) {
+      case "port_scan": {
+        detailRow(dl, "Target", d.remote_ip);
+        detailRow(dl, "Distinct ports probed", String(d.port_count));
+        if (Array.isArray(d.ports)) {
+          const list = d.ports.join(", ") + (d.ports_truncated ? ", …" : "");
+          detailRow(dl, "Ports", list);
+        }
+        detailRow(dl, "Window", `${d.window_seconds}s`);
+        break;
+      }
+      case "new_destination": {
+        detailRow(dl, "Peer", `${d.remote_ip}:${d.remote_port}`);
+        detailRow(dl, "Why it's flagged", "Not contacted by this host in the last 30 days");
+        break;
+      }
+      case "beaconing": {
+        detailRow(dl, "Peer", `${d.remote_ip}:${d.remote_port}`);
+        detailRow(dl, "Mean interval", `${Math.round(d.mean_interval_s)}s`);
+        detailRow(dl, "Observations", String(d.observations));
+        break;
+      }
+      case "exfil_ratio": {
+        detailRow(dl, "Sent", fmtBytes(d.bytes_sent));
+        detailRow(dl, "Received", fmtBytes(d.bytes_recv));
+        detailRow(dl, "Ratio", `${Number(d.ratio).toFixed(1)}x`);
+        break;
+      }
+      case "dns_anomaly": {
+        if (d.qname) {
+          detailRow(dl, "Domain", d.qname);
+          detailRow(dl, "Why it's flagged", "High-entropy name, suggestive of a DGA (domain generation algorithm)");
+        } else {
+          detailRow(dl, "Query count", String(d.query_count));
+          detailRow(dl, "Window", `${d.window_seconds}s`);
+        }
+        break;
+      }
+      default: {
+        for (const [k, v] of Object.entries(d)) {
+          detailRow(dl, k, String(v));
+        }
+      }
+    }
+    return dl;
+  }
+
   // Renders a list of alerts into listEl (a <ul>), showing emptyEl instead if
   // there are none. showHostLink includes a link to the host's detail page
   // (used on the global alerts page; omitted on a host's own alerts section).
@@ -122,8 +206,13 @@
       const li = document.createElement("li");
       li.className = "alert-item severity-" + a.severity + (a.acknowledged ? " acknowledged" : "");
 
-      const body = document.createElement("div");
+      const main = document.createElement("div");
+      main.className = "alert-main";
+
+      const body = document.createElement("button");
+      body.type = "button";
       body.className = "alert-body";
+      body.setAttribute("aria-expanded", "false");
 
       const summary = document.createElement("div");
       summary.className = "alert-summary";
@@ -142,10 +231,32 @@
         const hostLink = document.createElement("a");
         hostLink.href = "/hosts/" + a.host_id;
         hostLink.textContent = a.host_ip;
+        hostLink.addEventListener("click", (e) => e.stopPropagation());
         meta.appendChild(hostLink);
       }
+      const chevron = document.createElement("span");
+      chevron.className = "alert-chevron";
+      chevron.textContent = "Details ▾";
+      meta.appendChild(chevron);
       body.appendChild(meta);
-      li.appendChild(body);
+      main.appendChild(body);
+
+      const detailPanel = document.createElement("div");
+      detailPanel.className = "alert-detail";
+      detailPanel.hidden = true;
+      let built = false;
+      body.addEventListener("click", () => {
+        if (!built) {
+          detailPanel.appendChild(buildAlertDetail(a.kind, JSON.parse(a.detail || "{}").direction, a.detail));
+          built = true;
+        }
+        const expanded = !detailPanel.hidden;
+        detailPanel.hidden = expanded;
+        body.setAttribute("aria-expanded", String(!expanded));
+        chevron.textContent = expanded ? "Details ▾" : "Details ▴";
+      });
+      main.appendChild(detailPanel);
+      li.appendChild(main);
 
       if (!a.acknowledged) {
         const btn = document.createElement("button");
