@@ -109,3 +109,73 @@ func TestPipelineReplayEndToEnd(t *testing.T) {
 		t.Errorf("expected both directions present, outbound=%v inbound=%v", sawOutbound, sawInbound)
 	}
 }
+
+// TestPipelineLearnsDeviceNameEndToEnd replays a DHCP DISCOVER (announcing a
+// hostname) followed by ordinary LAN->WAN traffic from the same MAC/IP, and
+// checks that the host ends up with both its MAC and DHCP-learned display
+// name recorded — exercising the full decode -> pipeline -> store path, not
+// just the individual pieces.
+func TestPipelineLearnsDeviceNameEndToEnd(t *testing.T) {
+	clientMAC, _ := net.ParseMAC("aa:bb:cc:dd:ee:03")
+	remoteMAC, _ := net.ParseMAC("aa:bb:cc:dd:ee:04")
+
+	dhcpPkt := synthDHCPDiscoverPacket(t, clientMAC, "my-laptop")
+	flowPkt := synthTCPPacket(t, clientMAC, remoteMAC,
+		net.ParseIP("192.168.1.60"), net.ParseIP("93.184.216.34"), 55000, 443, []byte("hi"))
+
+	var buf bytes.Buffer
+	w := pcapgo.NewWriter(&buf)
+	if err := w.WriteFileHeader(65536, layers.LinkTypeEthernet); err != nil {
+		t.Fatalf("write pcap header: %v", err)
+	}
+	now := time.Unix(1000, 0)
+	for _, pkt := range [][]byte{dhcpPkt, flowPkt} {
+		ci := gopacket.CaptureInfo{Timestamp: now, CaptureLength: len(pkt), Length: len(pkt)}
+		if err := w.WritePacket(ci, pkt); err != nil {
+			t.Fatalf("write pcap packet: %v", err)
+		}
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "shadowstat.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open test db: %v", err)
+	}
+	defer db.Close()
+
+	src, err := NewReplaySource(&buf)
+	if err != nil {
+		t.Fatalf("open replay source: %v", err)
+	}
+	_, lan, err := net.ParseCIDR("192.168.1.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pipeline := NewPipeline(db, src, lan, 20*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if err := pipeline.Run(ctx); err != nil {
+		t.Fatalf("pipeline run: %v", err)
+	}
+
+	hosts, err := db.ListHosts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *store.Host
+	for i := range hosts {
+		if hosts[i].IP == "192.168.1.60" {
+			found = &hosts[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected a host for 192.168.1.60, got %+v", hosts)
+	}
+	if !found.MACAddress.Valid || found.MACAddress.String != clientMAC.String() {
+		t.Errorf("mac_address = %+v, want %q", found.MACAddress, clientMAC.String())
+	}
+	if !found.DisplayName.Valid || found.DisplayName.String != "my-laptop" {
+		t.Errorf("display_name = %+v, want %q", found.DisplayName, "my-laptop")
+	}
+}

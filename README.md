@@ -7,16 +7,15 @@ persistent history that survives restarts.
 
 ## Status
 
-MVP core plus detection engine: live capture → aggregation → durable
-two-tier SQLite storage → authenticated, mobile-friendly HTTPS UI with
-per-host stats, zoomable graphs, and an alerts view fed by five behavioral
-detectors (new destinations, beaconing, upload/download ratio, DNS
-volume/entropy, port scanning). See Roadmap below for what's next.
+MVP core plus detection engine and device naming: live capture →
+aggregation → durable two-tier SQLite storage → authenticated,
+mobile-friendly HTTPS UI with per-host stats (shown by name when known,
+learned from DHCP), zoomable graphs, and an alerts view fed by five
+behavioral detectors (new destinations, beaconing, upload/download ratio,
+DNS volume/entropy, port scanning). See Roadmap below for what's next.
 
 ## Roadmap
 
-- **Device naming** — MAC address + DHCP hostname resolution so hosts show
-  as names instead of raw IPs. **Next up.**
 - **Service install** — `install-service`/`uninstall-service`/`status`
   subcommands, systemd (+ openrc/sysvinit where practical) unit generation,
   a dedicated unprivileged service user with `AmbientCapabilities=CAP_NET_RAW
@@ -86,7 +85,11 @@ pipeline, rollup/retention design, and web API. Short version:
 
 - `internal/capture` — pulls packets off an AF_PACKET socket (via
   `gopacket/pcapgo`), decodes them, and aggregates in memory before flushing
-  batches to SQLite on a timer (never per-packet writes).
+  batches to SQLite on a timer (never per-packet writes). Also opportunistically
+  learns each host's MAC (from the Ethernet header of its own traffic) and
+  hostname (from DHCP option 12, decoded off broadcast DISCOVER/REQUEST
+  packets — the BPF filter has a dedicated branch admitting broadcast traffic
+  for exactly this), so hosts can show up as names instead of bare IPs.
 - `internal/store` — the only package touching `database/sql`. Two-tier
   storage: `flows_recent` (full 5-tuple, last 24h) plus `rollup_1m/5m/1h/1d`
   tables for zoomed-out, long-retention graphing.

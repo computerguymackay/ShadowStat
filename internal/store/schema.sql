@@ -33,10 +33,19 @@ CREATE TABLE IF NOT EXISTS hosts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     ip              TEXT NOT NULL UNIQUE,
     display_name    TEXT,
+    mac_address     TEXT,
     first_seen      INTEGER NOT NULL,
     last_seen       INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_hosts_last_seen ON hosts(last_seen);
+
+-- Hostnames learned by observing DHCP client traffic (option 12), keyed by
+-- MAC since a client's IP isn't yet assigned during DISCOVER/SELECTING.
+CREATE TABLE IF NOT EXISTS dhcp_hostnames (
+    mac_address TEXT PRIMARY KEY,
+    hostname    TEXT NOT NULL,
+    last_seen   INTEGER NOT NULL
+);
 
 -- ── Tier 1: full-fidelity recent flows (last 24h working set) ───────
 CREATE TABLE IF NOT EXISTS flows_recent (

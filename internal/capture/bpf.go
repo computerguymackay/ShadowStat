@@ -11,10 +11,17 @@ import (
 // snapLen is the number of bytes the kernel is told to keep for accepted packets.
 const snapLen = 262144
 
+// broadcastAddr is 255.255.255.255 as a big-endian uint32, matched below so
+// DHCP DISCOVER/REQUEST broadcasts (which the LAN subnet address check alone
+// would reject — their destination is the broadcast address, not a LAN host)
+// still reach the device-naming decoder.
+const broadcastAddr = 0xFFFFFFFF
+
 // CompileLANFilter builds a raw BPF program that accepts IPv4 Ethernet frames
-// where either the source or destination address falls within lanCIDR, and
-// rejects everything else. Built by hand (via golang.org/x/net/bpf) rather than
-// a filter-string compiler, since we deliberately avoid any libpcap dependency.
+// where either the source or destination address falls within lanCIDR, plus
+// LAN broadcast traffic (needed for DHCP-based device naming), and rejects
+// everything else. Built by hand (via golang.org/x/net/bpf) rather than a
+// filter-string compiler, since we deliberately avoid any libpcap dependency.
 //
 // Known MVP limitation: IPv4 only. IPv6 LAN subnets are not yet supported by
 // this filter (tracked as future work alongside the rest of the detection roadmap).
@@ -40,15 +47,17 @@ func CompileLANFilter(lanCIDR string) ([]bpf.RawInstruction, error) {
 
 	prog := []bpf.Instruction{
 		bpf.LoadAbsolute{Off: etherTypeOff, Size: 2},                       // 0
-		bpf.JumpIf{Cond: bpf.JumpNotEqual, Val: etherTypeIP4, SkipTrue: 6}, // 1: not IPv4 -> reject (idx 8)
+		bpf.JumpIf{Cond: bpf.JumpNotEqual, Val: etherTypeIP4, SkipTrue: 8}, // 1: not IPv4 -> reject (idx 10)
 		bpf.LoadAbsolute{Off: srcIPOff, Size: 4},                           // 2
 		bpf.ALUOpConstant{Op: bpf.ALUOpAnd, Val: mask},                     // 3
-		bpf.JumpIf{Cond: bpf.JumpEqual, Val: network, SkipTrue: 4},         // 4: src matches -> accept (idx 9)
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: network, SkipTrue: 6},         // 4: src matches -> accept (idx 11)
 		bpf.LoadAbsolute{Off: dstIPOff, Size: 4},                           // 5
 		bpf.ALUOpConstant{Op: bpf.ALUOpAnd, Val: mask},                     // 6
-		bpf.JumpIf{Cond: bpf.JumpEqual, Val: network, SkipTrue: 1},         // 7: dst matches -> accept (idx 9)
-		bpf.RetConstant{Val: 0},                                            // 8: reject
-		bpf.RetConstant{Val: snapLen},                                      // 9: accept
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: network, SkipTrue: 3},         // 7: dst matches -> accept (idx 11)
+		bpf.LoadAbsolute{Off: dstIPOff, Size: 4},                           // 8: reload dst, unmasked
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: broadcastAddr, SkipTrue: 1},   // 9: broadcast -> accept (idx 11)
+		bpf.RetConstant{Val: 0},                                            // 10: reject
+		bpf.RetConstant{Val: snapLen},                                      // 11: accept
 	}
 
 	raw, err := bpf.Assemble(prog)

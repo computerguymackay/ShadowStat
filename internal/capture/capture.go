@@ -41,7 +41,8 @@ type FlowEvent struct {
 	Key        FlowKey
 	Timestamp  time.Time
 	Bytes      int
-	IsLocalSrc bool // true if the packet's source side is the LAN-local address
+	IsLocalSrc bool   // true if the packet's source side is the LAN-local address
+	LocalMAC   string // Ethernet MAC of the LAN-local side, for device identification
 }
 
 // DNSQueryEvent is one observed outbound DNS query, used by the detection
@@ -51,6 +52,15 @@ type DNSQueryEvent struct {
 	LocalIP   string
 	QName     string
 	QType     uint16
+	Timestamp time.Time
+}
+
+// DHCPHostnameEvent is a hostname a LAN client announced during DHCP
+// negotiation (option 12), used to give hosts human-readable names. Keyed by
+// MAC rather than IP since a client typically has no IP yet at DISCOVER time.
+type DHCPHostnameEvent struct {
+	MAC       string
+	Hostname  string
 	Timestamp time.Time
 }
 

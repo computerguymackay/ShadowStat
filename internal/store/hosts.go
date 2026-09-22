@@ -7,32 +7,44 @@ type Host struct {
 	ID          int64
 	IP          string
 	DisplayName sql.NullString
+	MACAddress  sql.NullString
 	FirstSeen   int64
 	LastSeen    int64
 }
 
-// UpsertHost creates a host row for ip if absent, or bumps last_seen if present.
-// Returns the host's id.
+// UpsertHost creates a host row for ip if absent, or bumps last_seen if the
+// new timestamp is more recent. Returns the host's id in a single round trip.
 func (db *DB) UpsertHost(ip string, seenAt int64) (int64, error) {
-	_, err := db.Writer.Exec(
-		`INSERT INTO hosts (ip, first_seen, last_seen) VALUES (?, ?, ?)
-		 ON CONFLICT(ip) DO UPDATE SET last_seen = excluded.last_seen
-		 WHERE excluded.last_seen > hosts.last_seen`,
-		ip, seenAt, seenAt,
-	)
-	if err != nil {
-		return 0, err
-	}
 	var id int64
-	if err := db.Writer.QueryRow("SELECT id FROM hosts WHERE ip = ?", ip).Scan(&id); err != nil {
-		return 0, err
-	}
-	return id, nil
+	err := db.Writer.QueryRow(
+		`INSERT INTO hosts (ip, first_seen, last_seen) VALUES (?, ?, ?)
+		 ON CONFLICT(ip) DO UPDATE SET last_seen = MAX(hosts.last_seen, excluded.last_seen)
+		 RETURNING id`,
+		ip, seenAt, seenAt,
+	).Scan(&id)
+	return id, err
+}
+
+// SetHostMAC records (or updates) a host's observed MAC address.
+func (db *DB) SetHostMAC(hostID int64, mac string) error {
+	_, err := db.Writer.Exec("UPDATE hosts SET mac_address = ? WHERE id = ? AND (mac_address IS NULL OR mac_address != ?)", mac, hostID, mac)
+	return err
+}
+
+// SetHostDisplayNameByMAC updates display_name for every host currently
+// recorded with the given MAC address — used when a DHCP-observed hostname
+// is learned, since it may arrive before or after the host's own IP traffic.
+func (db *DB) SetHostDisplayNameByMAC(mac, hostname string) error {
+	_, err := db.Writer.Exec(
+		"UPDATE hosts SET display_name = ? WHERE mac_address = ? AND (display_name IS NULL OR display_name != ?)",
+		hostname, mac, hostname,
+	)
+	return err
 }
 
 // ListHosts returns all known hosts ordered by most recently active first.
 func (db *DB) ListHosts() ([]Host, error) {
-	rows, err := db.Reader.Query("SELECT id, ip, display_name, first_seen, last_seen FROM hosts ORDER BY last_seen DESC")
+	rows, err := db.Reader.Query("SELECT id, ip, display_name, mac_address, first_seen, last_seen FROM hosts ORDER BY last_seen DESC")
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +53,7 @@ func (db *DB) ListHosts() ([]Host, error) {
 	var hosts []Host
 	for rows.Next() {
 		var h Host
-		if err := rows.Scan(&h.ID, &h.IP, &h.DisplayName, &h.FirstSeen, &h.LastSeen); err != nil {
+		if err := rows.Scan(&h.ID, &h.IP, &h.DisplayName, &h.MACAddress, &h.FirstSeen, &h.LastSeen); err != nil {
 			return nil, err
 		}
 		hosts = append(hosts, h)
@@ -53,8 +65,8 @@ func (db *DB) ListHosts() ([]Host, error) {
 func (db *DB) HostByID(id int64) (*Host, error) {
 	var h Host
 	err := db.Reader.QueryRow(
-		"SELECT id, ip, display_name, first_seen, last_seen FROM hosts WHERE id = ?", id,
-	).Scan(&h.ID, &h.IP, &h.DisplayName, &h.FirstSeen, &h.LastSeen)
+		"SELECT id, ip, display_name, mac_address, first_seen, last_seen FROM hosts WHERE id = ?", id,
+	).Scan(&h.ID, &h.IP, &h.DisplayName, &h.MACAddress, &h.FirstSeen, &h.LastSeen)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}

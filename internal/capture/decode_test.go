@@ -56,14 +56,15 @@ func TestDecodeClassifiesLANToWAN(t *testing.T) {
 		net.ParseIP("192.168.1.50"), net.ParseIP("93.184.216.34"),
 		54321, 443, []byte("hello"))
 
-	evt, ok, _, dnsOK := d.Decode(RawPacket{Data: data, Timestamp: time.Unix(1000, 0)})
-	if !ok {
+	res := d.Decode(RawPacket{Data: data, Timestamp: time.Unix(1000, 0)})
+	if !res.HasFlow {
 		t.Fatal("expected decode to succeed")
 	}
-	if dnsOK {
+	if res.HasDNS {
 		t.Error("expected no DNS event for a plain TCP packet")
 	}
 
+	evt := res.Flow
 	if evt.Key.Direction != 0 {
 		t.Errorf("direction = %d, want 0 (LAN->WAN)", evt.Key.Direction)
 	}
@@ -85,6 +86,9 @@ func TestDecodeClassifiesLANToWAN(t *testing.T) {
 	if evt.Bytes != len(data) {
 		t.Errorf("bytes = %d, want %d", evt.Bytes, len(data))
 	}
+	if evt.LocalMAC != srcMAC.String() {
+		t.Errorf("local MAC = %q, want %q", evt.LocalMAC, srcMAC.String())
+	}
 }
 
 func synthDNSQueryPacket(t *testing.T, srcMAC, dstMAC net.HardwareAddr, srcIP, dstIP net.IP, qname string) []byte {
@@ -92,7 +96,7 @@ func synthDNSQueryPacket(t *testing.T, srcMAC, dstMAC net.HardwareAddr, srcIP, d
 
 	eth := &layers.Ethernet{SrcMAC: srcMAC, DstMAC: dstMAC, EthernetType: layers.EthernetTypeIPv4}
 	ip := &layers.IPv4{Version: 4, IHL: 5, TTL: 64, Protocol: layers.IPProtocolUDP, SrcIP: srcIP, DstIP: dstIP}
-	udp := &layers.UDP{SrcPort: layers.UDPPort(51000), DstPort: layers.UDPPort(dnsPort)}
+	udp := &layers.UDP{SrcPort: layers.UDPPort(51000), DstPort: layers.UDPPort(dnsServicePort)}
 	dns := &layers.DNS{
 		ID:      1234,
 		OpCode:  layers.DNSOpCodeQuery,
@@ -125,24 +129,81 @@ func TestDecodeExtractsDNSQuery(t *testing.T) {
 	data := synthDNSQueryPacket(t, srcMAC, dstMAC,
 		net.ParseIP("192.168.1.50"), net.ParseIP("8.8.8.8"), "example.com")
 
-	flow, flowOK, dns, dnsOK := d.Decode(RawPacket{Data: data, Timestamp: time.Unix(1000, 0)})
-	if !flowOK {
+	res := d.Decode(RawPacket{Data: data, Timestamp: time.Unix(1000, 0)})
+	if !res.HasFlow {
 		t.Fatal("expected flow decode to succeed")
 	}
-	if flow.Key.RemotePort != dnsPort {
-		t.Errorf("remote port = %d, want %d", flow.Key.RemotePort, dnsPort)
+	if res.Flow.Key.RemotePort != dnsServicePort {
+		t.Errorf("remote port = %d, want %d", res.Flow.Key.RemotePort, dnsServicePort)
 	}
-	if !dnsOK {
+	if !res.HasDNS {
 		t.Fatal("expected a DNS query event")
 	}
-	if dns.QName != "example.com" {
-		t.Errorf("qname = %q, want %q", dns.QName, "example.com")
+	if res.DNS.QName != "example.com" {
+		t.Errorf("qname = %q, want %q", res.DNS.QName, "example.com")
 	}
-	if dns.LocalIP != "192.168.1.50" {
-		t.Errorf("local ip = %q, want %q", dns.LocalIP, "192.168.1.50")
+	if res.DNS.LocalIP != "192.168.1.50" {
+		t.Errorf("local ip = %q, want %q", res.DNS.LocalIP, "192.168.1.50")
 	}
-	if dns.QType != uint16(layers.DNSTypeA) {
-		t.Errorf("qtype = %d, want %d", dns.QType, layers.DNSTypeA)
+	if res.DNS.QType != uint16(layers.DNSTypeA) {
+		t.Errorf("qtype = %d, want %d", res.DNS.QType, layers.DNSTypeA)
+	}
+}
+
+func synthDHCPDiscoverPacket(t *testing.T, clientMAC net.HardwareAddr, hostname string) []byte {
+	t.Helper()
+
+	broadcastMAC := net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+	eth := &layers.Ethernet{SrcMAC: clientMAC, DstMAC: broadcastMAC, EthernetType: layers.EthernetTypeIPv4}
+	ip := &layers.IPv4{
+		Version: 4, IHL: 5, TTL: 64, Protocol: layers.IPProtocolUDP,
+		SrcIP: net.IPv4zero, DstIP: net.IPv4bcast,
+	}
+	udp := &layers.UDP{SrcPort: layers.UDPPort(dhcpClientPort), DstPort: layers.UDPPort(dhcpServerPort)}
+	dhcp := &layers.DHCPv4{
+		Operation:    layers.DHCPOpRequest,
+		HardwareType: layers.LinkTypeEthernet,
+		HardwareLen:  6,
+		Xid:          0xdeadbeef,
+		ClientHWAddr: clientMAC,
+		Options: layers.DHCPOptions{
+			layers.NewDHCPOption(layers.DHCPOptMessageType, []byte{byte(layers.DHCPMsgTypeDiscover)}),
+			layers.NewDHCPOption(layers.DHCPOptHostname, []byte(hostname)),
+		},
+	}
+
+	buf := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: false}
+	if err := gopacket.SerializeLayers(buf, opts, eth, ip, udp, dhcp); err != nil {
+		t.Fatalf("serialize test DHCP packet: %v", err)
+	}
+	out := make([]byte, len(buf.Bytes()))
+	copy(out, buf.Bytes())
+	return out
+}
+
+func TestDecodeExtractsDHCPHostname(t *testing.T) {
+	_, lan, err := net.ParseCIDR("192.168.1.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := NewDecoder(lan)
+
+	clientMAC, _ := net.ParseMAC("aa:bb:cc:dd:ee:03")
+	data := synthDHCPDiscoverPacket(t, clientMAC, "my-laptop")
+
+	res := d.Decode(RawPacket{Data: data, Timestamp: time.Unix(1000, 0)})
+	if res.HasFlow {
+		t.Error("expected no flow event for a broadcast DHCP DISCOVER")
+	}
+	if !res.HasDHCP {
+		t.Fatal("expected a DHCP hostname event")
+	}
+	if res.DHCP.Hostname != "my-laptop" {
+		t.Errorf("hostname = %q, want %q", res.DHCP.Hostname, "my-laptop")
+	}
+	if res.DHCP.MAC != clientMAC.String() {
+		t.Errorf("mac = %q, want %q", res.DHCP.MAC, clientMAC.String())
 	}
 }
 
@@ -159,10 +220,11 @@ func TestDecodeClassifiesWANToLAN(t *testing.T) {
 		net.ParseIP("93.184.216.34"), net.ParseIP("192.168.1.50"),
 		443, 54321, []byte("world"))
 
-	evt, ok, _, _ := d.Decode(RawPacket{Data: data, Timestamp: time.Unix(1000, 0)})
-	if !ok {
+	res := d.Decode(RawPacket{Data: data, Timestamp: time.Unix(1000, 0)})
+	if !res.HasFlow {
 		t.Fatal("expected decode to succeed")
 	}
+	evt := res.Flow
 	if evt.Key.Direction != 1 {
 		t.Errorf("direction = %d, want 1 (WAN->LAN)", evt.Key.Direction)
 	}
@@ -171,5 +233,8 @@ func TestDecodeClassifiesWANToLAN(t *testing.T) {
 	}
 	if evt.IsLocalSrc {
 		t.Error("expected IsLocalSrc = false")
+	}
+	if evt.LocalMAC != dstMAC.String() {
+		t.Errorf("local MAC = %q, want %q", evt.LocalMAC, dstMAC.String())
 	}
 }

@@ -8,7 +8,25 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
-const dnsPort = 53
+const (
+	dnsServicePort = 53
+	dhcpServerPort = 67
+	dhcpClientPort = 68
+)
+
+// DecodeResult bundles everything a single packet can produce: a flow
+// contribution, an outbound DNS query, and/or a DHCP-announced hostname. Each
+// is independently optional (a DHCP packet produces no flow, most packets
+// produce no DNS/DHCP event) — using a struct here instead of a long list of
+// (value, ok) pairs keeps the call site readable.
+type DecodeResult struct {
+	Flow    FlowEvent
+	HasFlow bool
+	DNS     DNSQueryEvent
+	HasDNS  bool
+	DHCP    DHCPHostnameEvent
+	HasDHCP bool
+}
 
 // Decoder wraps a reusable gopacket.DecodingLayerParser so repeated packet
 // decodes don't allocate a fresh set of layer structs each time.
@@ -23,7 +41,8 @@ type Decoder struct {
 	udp   layers.UDP
 	icmp4 layers.ICMPv4
 	icmp6 layers.ICMPv6
-	dns   layers.DNS // decoded manually below; gopacket doesn't auto-chain UDP->DNS
+	dns   layers.DNS    // decoded manually below; gopacket doesn't auto-chain UDP->DNS
+	dhcp  layers.DHCPv4 // decoded manually below, same reason
 
 	lan *net.IPNet
 }
@@ -41,11 +60,10 @@ func NewDecoder(lan *net.IPNet) *Decoder {
 	return d
 }
 
-// Decode parses a raw packet into a FlowEvent, and — if the packet is an
-// outbound DNS query — also a DNSQueryEvent. flowOK is false for packets that
-// aren't IPv4/IPv6+TCP/UDP/ICMP (nothing meaningful to aggregate). dnsOK is
-// true only for UDP/53 packets carrying an actual query (not a response).
-func (d *Decoder) Decode(pkt RawPacket) (flow FlowEvent, flowOK bool, dns DNSQueryEvent, dnsOK bool) {
+// Decode parses a raw packet and reports whatever it finds. Broadcast/
+// unspecified-address traffic (DHCP DISCOVER/OFFER) never becomes a flow —
+// it has no meaningful "host" IP — but is still checked for a DHCP hostname.
+func (d *Decoder) Decode(pkt RawPacket) DecodeResult {
 	// Partial decodes are expected (IgnoreUnsupported) and still populate
 	// d.decoded with whatever layers *were* recognized, so the error is
 	// deliberately ignored here; absence of a usable IP layer is checked below.
@@ -77,23 +95,39 @@ func (d *Decoder) Decode(pkt RawPacket) (flow FlowEvent, flowOK bool, dns DNSQue
 		}
 	}
 
+	var result DecodeResult
 	if !haveIP {
-		return FlowEvent{}, false, DNSQueryEvent{}, false
+		return result
 	}
 	// Ports default to 0 for ICMP/other non-port-bearing protocols.
+
+	if haveUDP && (srcPort == dhcpClientPort || dstPort == dhcpServerPort) {
+		if ev, ok := d.decodeDHCPHostname(pkt.Timestamp); ok {
+			result.DHCP, result.HasDHCP = ev, true
+		}
+	}
+
+	// DHCP DISCOVER/REQUEST traffic (src 0.0.0.0 and/or broadcast dst) has no
+	// meaningful per-host flow to record — skip flow/DNS handling for it.
+	if srcIP.IsUnspecified() || dstIP.Equal(net.IPv4bcast) {
+		return result
+	}
 
 	srcLocal := d.lan.Contains(srcIP)
 	dstLocal := d.lan.Contains(dstIP)
 	direction := classifyDirection(srcLocal, dstLocal)
 
 	var localIP, remoteIP net.IP
+	var localMAC net.HardwareAddr
 	var localPort, remotePort int
 	if srcLocal {
 		localIP, remoteIP = srcIP, dstIP
 		localPort, remotePort = srcPort, dstPort
+		localMAC = d.eth.SrcMAC
 	} else {
 		localIP, remoteIP = dstIP, srcIP
 		localPort, remotePort = dstPort, srcPort
+		localMAC = d.eth.DstMAC
 	}
 
 	ts := pkt.Timestamp
@@ -101,7 +135,7 @@ func (d *Decoder) Decode(pkt RawPacket) (flow FlowEvent, flowOK bool, dns DNSQue
 		ts = time.Now()
 	}
 
-	flow = FlowEvent{
+	result.Flow = FlowEvent{
 		Key: FlowKey{
 			Direction:  direction,
 			Proto:      proto,
@@ -113,15 +147,17 @@ func (d *Decoder) Decode(pkt RawPacket) (flow FlowEvent, flowOK bool, dns DNSQue
 		Timestamp:  ts,
 		Bytes:      len(pkt.Data),
 		IsLocalSrc: srcLocal,
+		LocalMAC:   localMAC.String(),
 	}
+	result.HasFlow = true
 
-	if haveUDP && (srcPort == dnsPort || dstPort == dnsPort) {
+	if haveUDP && (srcPort == dnsServicePort || dstPort == dnsServicePort) {
 		if q, ok := d.decodeDNSQuery(localIP.String(), ts); ok {
-			dns, dnsOK = q, true
+			result.DNS, result.HasDNS = q, true
 		}
 	}
 
-	return flow, true, dns, dnsOK
+	return result
 }
 
 // decodeDNSQuery manually decodes the UDP payload as DNS — gopacket's
@@ -143,4 +179,30 @@ func (d *Decoder) decodeDNSQuery(localIP string, ts time.Time) (DNSQueryEvent, b
 		QType:     uint16(q.Type),
 		Timestamp: ts,
 	}, true
+}
+
+// decodeDHCPHostname manually decodes the UDP payload as DHCPv4 — same
+// no-auto-chaining situation as DNS. Only client-originated messages
+// (DISCOVER/REQUEST) carrying option 12 (Hostname) produce an event; the
+// client's hardware address (not its as-yet-unassigned IP) is the key.
+func (d *Decoder) decodeDHCPHostname(ts time.Time) (DHCPHostnameEvent, bool) {
+	if err := d.dhcp.DecodeFromBytes(d.udp.Payload, gopacket.NilDecodeFeedback); err != nil {
+		return DHCPHostnameEvent{}, false
+	}
+	if d.dhcp.Operation != layers.DHCPOpRequest {
+		return DHCPHostnameEvent{}, false // server->client message, not client-originated
+	}
+	for _, opt := range d.dhcp.Options {
+		if opt.Type == layers.DHCPOptHostname && len(opt.Data) > 0 {
+			if ts.IsZero() {
+				ts = time.Now()
+			}
+			return DHCPHostnameEvent{
+				MAC:       d.dhcp.ClientHWAddr.String(),
+				Hostname:  string(opt.Data),
+				Timestamp: ts,
+			}, true
+		}
+	}
+	return DHCPHostnameEvent{}, false
 }

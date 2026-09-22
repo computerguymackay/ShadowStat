@@ -89,6 +89,13 @@ func (db *DB) migrate() error {
 		return fmt.Errorf("apply schema: %w", err)
 	}
 
+	// schema.sql only CREATEs tables that don't yet exist, so a column added
+	// to an existing table's definition here needs an explicit ALTER for
+	// databases created before that column existed.
+	if err := db.ensureColumn("hosts", "mac_address", "TEXT"); err != nil {
+		return fmt.Errorf("migrate hosts.mac_address: %w", err)
+	}
+
 	var count int
 	if err := db.Writer.QueryRow("SELECT COUNT(*) FROM schema_meta").Scan(&count); err != nil {
 		return fmt.Errorf("check schema_meta: %w", err)
@@ -99,4 +106,34 @@ func (db *DB) migrate() error {
 		}
 	}
 	return nil
+}
+
+// ensureColumn adds column to table (with the given SQLite type) if it
+// doesn't already exist. SQLite has no "ADD COLUMN IF NOT EXISTS", so
+// existence is checked via PRAGMA table_info first.
+func (db *DB) ensureColumn(table, column, sqlType string) error {
+	rows, err := db.Writer.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull, pk int
+		var dfltValue any
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil // already present
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	_, err = db.Writer.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, sqlType))
+	return err
 }
