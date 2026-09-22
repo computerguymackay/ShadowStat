@@ -11,9 +11,23 @@ MVP core plus detection engine: live capture → aggregation → durable
 two-tier SQLite storage → authenticated, mobile-friendly HTTPS UI with
 per-host stats, zoomable graphs, and an alerts view fed by five behavioral
 detectors (new destinations, beaconing, upload/download ratio, DNS
-volume/entropy, port scanning). systemd service install, cert-replacement
-UI, and device naming are not yet built — see the roadmap in the plan doc
-for what's next.
+volume/entropy, port scanning). See Roadmap below for what's next.
+
+## Roadmap
+
+- **Device naming** — MAC address + DHCP hostname resolution so hosts show
+  as names instead of raw IPs. **Next up.**
+- **Service install** — `install-service`/`uninstall-service`/`status`
+  subcommands, systemd (+ openrc/sysvinit where practical) unit generation,
+  a dedicated unprivileged service user with `AmbientCapabilities=CAP_NET_RAW
+  CAP_NET_ADMIN` so capture works without running as root or depending on
+  file capabilities surviving a rebuild.
+- **Cert replacement UI** — swap the self-signed cert for a real one (or
+  ACME) via the settings page, hot-swapped without a restart.
+- **Pluggable sFlow/NetFlow sources** — `capture.Source` already has the
+  seam; only the AF_PACKET implementation exists today.
+- **Blocked-but-trying detector** — needs firewall log integration, not yet
+  scoped.
 
 ## Requirements
 
