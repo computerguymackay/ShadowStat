@@ -6,10 +6,15 @@ import (
 )
 
 // Direction values for flows_recent.direction / rollup_*.direction.
+// The two LAN-LAN values exist because a single LAN-to-LAN packet is recorded
+// from BOTH hosts' perspectives (two separate rows) — otherwise the
+// destination side of local traffic would never show up in its own stats or
+// detectors at all, only the source's.
 const (
-	DirLANToWAN  = 0
-	DirWANToLAN  = 1
-	DirInterVLAN = 2
+	DirLANToWAN = 0
+	DirWANToLAN = 1
+	DirLANOut   = 2 // this host initiated contact with another LAN-local peer
+	DirLANIn    = 3 // another LAN-local peer initiated contact with this host
 )
 
 // FlowRecord is a flushed, aggregated flow ready to be written to flows_recent.
@@ -132,7 +137,7 @@ type SeriesPoint struct {
 
 // HostSeriesFromFlowsRecent aggregates flows_recent on the fly into minute buckets,
 // used for the most recent 24h where rollup_1m may not yet cover the full range.
-// direction filters to a single direction (0/1/2) if >= 0, otherwise sums all directions.
+// direction filters to a single direction (0/1/2/3) if >= 0, otherwise sums all directions.
 func (db *DB) HostSeriesFromFlowsRecent(hostID int64, from, to int64, direction int) ([]SeriesPoint, error) {
 	query := `SELECT (last_seen/60)*60 AS bucket, SUM(bytes_sent), SUM(bytes_recv)
 		 FROM flows_recent

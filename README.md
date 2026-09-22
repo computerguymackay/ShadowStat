@@ -97,13 +97,17 @@ pipeline, rollup/retention design, and web API. Short version:
   prunes old data on independent tickers per granularity.
 - `internal/detect` — five periodic detectors reading the same
   `flows_recent`/`dns_queries` data, writing deduplicated `alerts` rows:
-  **new destinations** (a peer/port not contacted by a host in 30 days),
-  **beaconing** (suspiciously regular contact intervals with one peer — works
-  on encrypted traffic since it only looks at timing), **exfil ratio**
-  (upload far exceeding download to WAN), **DNS anomaly** (abnormal query
-  volume, or a high-entropy queried domain suggestive of a DGA), and **port
-  scan** (one host fanning out to many distinct remote ip:port pairs in a
-  short window).
+  **new destinations** (a peer/port not contacted by a host in 30 days —
+  labeled outbound/inbound/bidirectional depending on who actually initiated
+  contact), **beaconing** (suspiciously regular contact intervals with one
+  peer — works on encrypted traffic since it only looks at timing), **exfil
+  ratio** (upload far exceeding download to WAN), **DNS anomaly** (abnormal
+  query volume, or a high-entropy queried domain suggestive of a DGA), and
+  **port scan** (many distinct ports involving one peer in a short window —
+  checked in both directions: this host scanning out, *and* another LAN
+  device scanning this host, which needed LAN-to-LAN traffic to be recorded
+  from both hosts' perspectives, not just the packet's source — see
+  `capture.DecodeResult.Flow2`).
 - `internal/web` — HTTPS-only (`net/http` + `crypto/tls`), session auth via
   argon2id-hashed credentials, JSON API driving a vendored uPlot frontend for
   zoomable graphs from year view down to single-minute detail, plus an

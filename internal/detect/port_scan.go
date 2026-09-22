@@ -16,13 +16,13 @@ const (
 	// target's port fan-out; short because a scan is a burst, not a
 	// sustained pattern.
 	PortScanWindow = 2 * time.Minute
-	// portScanPortsPerTargetThreshold: distinct ports contacted on ONE remote
-	// IP within the window to flag as scan-like. This intentionally does NOT
+	// portScanPortsPerTargetThreshold: distinct ports involving ONE peer
+	// within the window to flag as scan-like. This intentionally does NOT
 	// trigger on contacting many different hosts (that's normal browsing/app
 	// traffic — a page pulling from a dozen CDNs isn't a scan) — only on one
-	// target being probed across many of its ports, which legitimate traffic
+	// peer relationship spanning many ports, which legitimate traffic
 	// essentially never does (an app talking to one server almost always
-	// uses one or two fixed remote ports, e.g. 443).
+	// uses one or two fixed ports, e.g. 443).
 	portScanPortsPerTargetThreshold = 15
 	// portScanDetailPortCap bounds how many ports get stored/shown per alert,
 	// in case of an extreme scan (thousands of ports) — the count is still
@@ -31,56 +31,102 @@ const (
 	portScanCooldown      = 15 * time.Minute
 )
 
-// PortScan flags a host contacting an unusually large number of distinct
-// ports on one remote IP within a short window — the actual signature of a
-// port scan. The host raising the alert is always the *initiator* (this
-// detector only looks at LAN->WAN traffic), so an alert means "this LAN
-// device probed <remote_ip>", never "this LAN device was probed by someone else".
+// portScanCheck describes one of the three ways port-scan-shaped traffic can
+// show up in flows_recent: this host scanning out to the WAN, this host
+// scanning out to another LAN device, or another LAN device scanning this
+// host. Each is a genuinely different situation, so each gets its own
+// summary wording — the whole point being to never leave "who scanned whom"
+// ambiguous.
+type portScanCheck struct {
+	direction      int
+	countLocalPort bool // true when peer diversity is measured via *this host's own* ports
+	dedupePrefix   string
+	buildSummary   func(hostLabel, remoteIP string, portCount int) string
+	detailDir      string // "outbound" or "inbound", stored in the alert detail
+}
+
+var portScanChecks = []portScanCheck{
+	{
+		direction:      store.DirLANToWAN,
+		countLocalPort: false,
+		dedupePrefix:   "wan_out:",
+		detailDir:      "outbound",
+		buildSummary: func(h, ip string, n int) string {
+			return fmt.Sprintf("%s (this device) probed %d distinct ports on %s — outbound scan initiated by this host", h, n, ip)
+		},
+	},
+	{
+		direction:      store.DirLANOut,
+		countLocalPort: false,
+		dedupePrefix:   "lan_out:",
+		detailDir:      "outbound",
+		buildSummary: func(h, ip string, n int) string {
+			return fmt.Sprintf("%s (this device) probed %d distinct ports on LAN peer %s — outbound scan initiated by this host", h, n, ip)
+		},
+	},
+	{
+		direction:      store.DirLANIn,
+		countLocalPort: true,
+		dedupePrefix:   "lan_in:",
+		detailDir:      "inbound",
+		buildSummary: func(h, ip string, n int) string {
+			return fmt.Sprintf("%s was probed on %d distinct ports by %s — another device on the LAN scanned this host (not the other way around)", h, n, ip)
+		},
+	},
+}
+
+// PortScan flags a host contacting — or being contacted on — an unusually
+// large number of distinct ports involving one peer within a short window:
+// the actual signature of a port scan, whether this host is the one doing it
+// (to a WAN or LAN target) or the one having it done to it (by a LAN peer —
+// inbound WAN scans aren't visible this way since they'd normally be
+// stopped at the router/NAT before reaching the LAN in the first place).
 func PortScan(db *store.DB, now time.Time) {
 	nowUnix := now.Unix()
 	since := nowUnix - int64(PortScanWindow.Seconds())
-
-	targets, err := db.HostTargetPortScans(since, nowUnix, portScanPortsPerTargetThreshold)
-	if err != nil {
-		log.Printf("detect: port_scan: load target port scans: %v", err)
-		return
-	}
-
 	cooldownSince := nowUnix - int64(portScanCooldown.Seconds())
 	hosts := make(map[int64]*store.Host)
 
-	for _, t := range targets {
-		host, ok := hosts[t.HostID]
-		if !ok {
-			h, err := db.HostByID(t.HostID)
-			if err != nil {
-				log.Printf("detect: port_scan: load host %d: %v", t.HostID, err)
-				continue
+	for _, check := range portScanChecks {
+		targets, err := db.HostTargetPortScans(since, nowUnix, check.direction, check.countLocalPort, portScanPortsPerTargetThreshold)
+		if err != nil {
+			log.Printf("detect: port_scan: load target port scans (dir=%d): %v", check.direction, err)
+			continue
+		}
+
+		for _, t := range targets {
+			host, ok := hosts[t.HostID]
+			if !ok {
+				h, err := db.HostByID(t.HostID)
+				if err != nil {
+					log.Printf("detect: port_scan: load host %d: %v", t.HostID, err)
+					continue
+				}
+				host = h
+				hosts[t.HostID] = h
 			}
-			host = h
-			hosts[t.HostID] = h
-		}
 
-		ports := parsePortsCSV(t.PortsCSV)
-		shown := ports
-		truncated := false
-		if len(shown) > portScanDetailPortCap {
-			shown = shown[:portScanDetailPortCap]
-			truncated = true
-		}
+			ports := parsePortsCSV(t.PortsCSV)
+			shown := ports
+			truncated := false
+			if len(shown) > portScanDetailPortCap {
+				shown = shown[:portScanDetailPortCap]
+				truncated = true
+			}
 
-		summary := fmt.Sprintf("%s (this device) probed %d distinct ports on %s — outbound scan initiated by this host",
-			hostLabel(host), t.PortCount, t.RemoteIP)
-		detail := map[string]any{
-			"direction":       "outbound", // this host was the initiator, not the target
-			"remote_ip":       t.RemoteIP,
-			"port_count":      t.PortCount,
-			"ports":           shown,
-			"ports_truncated": truncated,
-			"window_seconds":  int64(PortScanWindow.Seconds()),
-		}
+			summary := check.buildSummary(hostLabel(host), t.RemoteIP, t.PortCount)
+			detail := map[string]any{
+				"direction":       check.detailDir,
+				"remote_ip":       t.RemoteIP,
+				"port_count":      t.PortCount,
+				"ports":           shown,
+				"ports_truncated": truncated,
+				"window_seconds":  int64(PortScanWindow.Seconds()),
+			}
 
-		raiseAlert(db, t.HostID, store.AlertKindPortScan, store.SeverityCritical, summary, detail, t.RemoteIP, nowUnix, cooldownSince)
+			raiseAlert(db, t.HostID, store.AlertKindPortScan, store.SeverityCritical, summary, detail,
+				check.dedupePrefix+t.RemoteIP, nowUnix, cooldownSince)
+		}
 	}
 }
 

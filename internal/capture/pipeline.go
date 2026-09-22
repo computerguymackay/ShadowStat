@@ -61,11 +61,11 @@ func (p *Pipeline) Run(ctx context.Context) error {
 
 			if result.HasFlow {
 				p.agg.Add(result.Flow)
-				if result.Flow.LocalMAC != "" {
-					p.macMu.Lock()
-					p.macByIP[result.Flow.Key.LocalIP] = result.Flow.LocalMAC
-					p.macMu.Unlock()
-				}
+				p.rememberMAC(result.Flow)
+			}
+			if result.HasFlow2 {
+				p.agg.Add(result.Flow2)
+				p.rememberMAC(result.Flow2)
 			}
 			if result.HasDNS {
 				p.dnsMu.Lock()
@@ -221,4 +221,13 @@ func (p *Pipeline) lookupMAC(ip string) string {
 	p.macMu.Lock()
 	defer p.macMu.Unlock()
 	return p.macByIP[ip]
+}
+
+func (p *Pipeline) rememberMAC(flow FlowEvent) {
+	if flow.LocalMAC == "" {
+		return
+	}
+	p.macMu.Lock()
+	p.macByIP[flow.Key.LocalIP] = flow.LocalMAC
+	p.macMu.Unlock()
 }

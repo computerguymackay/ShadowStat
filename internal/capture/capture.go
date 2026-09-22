@@ -63,18 +63,3 @@ type DHCPHostnameEvent struct {
 	Hostname  string
 	Timestamp time.Time
 }
-
-// classifyDirection determines a packet's direction from which side(s) of the
-// 5-tuple fall inside the configured LAN subnet. Both-local and both-remote
-// packets shouldn't reach here given the BPF filter, but are defensively
-// classified as inter-VLAN so they're visible rather than dropped.
-func classifyDirection(srcLocal, dstLocal bool) int {
-	switch {
-	case srcLocal && !dstLocal:
-		return 0 // LAN -> WAN
-	case !srcLocal && dstLocal:
-		return 1 // WAN -> LAN
-	default:
-		return 2 // inter-VLAN (both local or both remote)
-	}
-}

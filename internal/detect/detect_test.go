@@ -296,6 +296,50 @@ func TestPortScanIgnoresManyHostsOnSamePort(t *testing.T) {
 	}
 }
 
+func TestPortScanDetectsThisHostBeingScannedByLANPeer(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now()
+
+	// The target of the scan — e.g. the ShadowStat box itself.
+	targetID, err := db.UpsertHost("192.168.1.100", now.Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Another LAN device probes 20 of the target's own ports. Recorded from
+	// the target's perspective: direction=DirLANIn, local_port varies (the
+	// port being probed), remote_ip is the scanner.
+	var records []store.FlowRecord
+	for i := 0; i < 20; i++ {
+		records = append(records, store.FlowRecord{
+			HostID: targetID, Direction: store.DirLANIn, Proto: 6,
+			LocalIP: "192.168.1.100", LocalPort: 1 + i,
+			RemoteIP: "192.168.1.60", RemotePort: 51000,
+			FirstSeen: now.Unix(), LastSeen: now.Unix(),
+			BytesSent: 0, BytesRecv: 40, PacketsSent: 0, PacketsRecv: 1,
+		})
+	}
+	if err := db.InsertFlows(records); err != nil {
+		t.Fatal(err)
+	}
+
+	PortScan(db, now)
+
+	alerts, err := db.ListAlertsForHost(targetID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(alerts) != 1 || alerts[0].Kind != store.AlertKindPortScan {
+		t.Fatalf("expected 1 port_scan alert, got %+v", alerts)
+	}
+	if !strings.Contains(alerts[0].Detail, `"direction":"inbound"`) {
+		t.Errorf("expected inbound direction in detail, got %q", alerts[0].Detail)
+	}
+	if !strings.Contains(alerts[0].Summary, "was probed on") {
+		t.Errorf("expected summary to say the host was probed (not that it did the probing), got %q", alerts[0].Summary)
+	}
+}
+
 func TestDNSAnomalyFlagsVolumeAndEntropy(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now()

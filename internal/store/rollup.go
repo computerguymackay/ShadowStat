@@ -3,7 +3,7 @@ package store
 import "fmt"
 
 // directionClause returns a SQL fragment filtering on direction when direction
-// is a valid value (0/1/2), or an empty string to leave rows unfiltered.
+// is a valid value (0/1/2/3), or an empty string to leave rows unfiltered.
 func directionClause(direction int) string {
 	if direction < 0 {
 		return ""
@@ -88,7 +88,7 @@ func (db *DB) IncrementalVacuum() error {
 }
 
 // HostSeriesFromRollup queries a rollup table for one host's series in [from, to].
-// direction filters to a single direction (0/1/2) if >= 0, otherwise sums all directions.
+// direction filters to a single direction (0/1/2/3) if >= 0, otherwise sums all directions.
 func (db *DB) HostSeriesFromRollup(granularity string, hostID int64, from, to int64, direction int) ([]SeriesPoint, error) {
 	table, ok := rollupTables[granularity]
 	if !ok {

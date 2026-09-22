@@ -171,7 +171,7 @@ func (h *apiHandlers) hostSeries(w http.ResponseWriter, r *http.Request) {
 	direction := -1
 	if dStr := r.URL.Query().Get("direction"); dStr != "" {
 		d, err := strconv.Atoi(dStr)
-		if err != nil || d < 0 || d > 2 {
+		if err != nil || d < 0 || d > 3 {
 			writeJSONError(w, http.StatusBadRequest, "invalid_direction")
 			return
 		}

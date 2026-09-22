@@ -1,5 +1,7 @@
 package store
 
+import "fmt"
+
 // Read-only queries used exclusively by internal/detect's detectors. Kept
 // separate from flows.go's core CRUD to make clear these are detector-specific
 // analytical views over flows_recent, not part of the base flow storage API.
@@ -74,30 +76,40 @@ func (db *DB) HostOutboundTotals(since, now int64) ([]HostByteTotals, error) {
 }
 
 // TargetPortScan is one (host, single remote IP) pair where the host
-// contacted an unusually large number of distinct ports on that one target —
-// the actual signature of a port scan, as opposed to contacting many
-// different hosts (which is normal multi-service browsing/app traffic and
-// was previously conflated with scanning, causing false positives).
+// contacted (or was contacted on) an unusually large number of distinct
+// ports involving that one peer — the actual signature of a port scan, as
+// opposed to contacting many different hosts (which is normal multi-service
+// browsing/app traffic and was previously conflated with scanning, causing
+// false positives).
 type TargetPortScan struct {
 	HostID    int64
 	RemoteIP  string
-	PortsCSV  string // comma-separated distinct remote ports, via GROUP_CONCAT; caller parses
+	PortsCSV  string // comma-separated distinct ports, via GROUP_CONCAT; caller parses
 	PortCount int
 }
 
-// HostTargetPortScans returns, for every (host, remote IP) pair in [since,
-// now] where the host contacted at least minPorts distinct ports on that one
-// remote IP, the port count and the actual port list (capped to a reasonable
-// size by the caller after parsing PortsCSV).
-func (db *DB) HostTargetPortScans(since, now int64, minPorts int) ([]TargetPortScan, error) {
-	rows, err := db.Reader.Query(
-		`SELECT host_id, remote_ip, COUNT(DISTINCT remote_port) AS port_count, GROUP_CONCAT(DISTINCT remote_port)
+// HostTargetPortScans returns, for every (host, remote IP) pair with
+// direction-matching activity in [since, now], where at least minPorts
+// distinct ports were involved with that one remote IP. countLocalPort
+// selects which side's port diversity is being measured: false counts
+// distinct remote_port (this host contacting many ports on one target —
+// used for direction=DirLANToWAN/DirLANOut, i.e. this host as scanner); true
+// counts distinct local_port (one remote peer hitting many of this host's
+// own ports — used for direction=DirLANIn, i.e. this host as scan target).
+func (db *DB) HostTargetPortScans(since, now int64, direction int, countLocalPort bool, minPorts int) ([]TargetPortScan, error) {
+	portCol := "remote_port"
+	if countLocalPort {
+		portCol = "local_port"
+	}
+	query := fmt.Sprintf(
+		`SELECT host_id, remote_ip, COUNT(DISTINCT %s) AS port_count, GROUP_CONCAT(DISTINCT %s)
 		 FROM flows_recent
 		 WHERE direction = ? AND last_seen >= ? AND last_seen <= ?
 		 GROUP BY host_id, remote_ip
 		 HAVING port_count >= ?`,
-		DirLANToWAN, since, now, minPorts,
+		portCol, portCol,
 	)
+	rows, err := db.Reader.Query(query, direction, since, now, minPorts)
 	if err != nil {
 		return nil, err
 	}

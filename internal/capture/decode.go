@@ -6,6 +6,8 @@ import (
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
+
+	"ShadowStat/internal/store"
 )
 
 const (
@@ -15,17 +17,27 @@ const (
 )
 
 // DecodeResult bundles everything a single packet can produce: a flow
-// contribution, an outbound DNS query, and/or a DHCP-announced hostname. Each
-// is independently optional (a DHCP packet produces no flow, most packets
-// produce no DNS/DHCP event) — using a struct here instead of a long list of
-// (value, ok) pairs keeps the call site readable.
+// contribution (or two — see Flow2), an outbound DNS query, and/or a
+// DHCP-announced hostname. Each is independently optional (a DHCP packet
+// produces no flow, most packets produce no DNS/DHCP event) — using a struct
+// here instead of a long list of (value, ok) pairs keeps the call site readable.
+//
+// A LAN-to-LAN packet (both source and destination inside the configured
+// subnet) produces TWO flow events, one per host's perspective — Flow from
+// the initiator's side, Flow2 from the receiver's side. Without this, only
+// whichever host happened to be the packet's source would ever see the
+// traffic in its own stats/detectors; the destination side (e.g. this
+// machine, when something on the LAN is scanning or otherwise contacting it)
+// would be invisible.
 type DecodeResult struct {
-	Flow    FlowEvent
-	HasFlow bool
-	DNS     DNSQueryEvent
-	HasDNS  bool
-	DHCP    DHCPHostnameEvent
-	HasDHCP bool
+	Flow     FlowEvent
+	HasFlow  bool
+	Flow2    FlowEvent
+	HasFlow2 bool
+	DNS      DNSQueryEvent
+	HasDNS   bool
+	DHCP     DHCPHostnameEvent
+	HasDHCP  bool
 }
 
 // Decoder wraps a reusable gopacket.DecodingLayerParser so repeated packet
@@ -115,27 +127,59 @@ func (d *Decoder) Decode(pkt RawPacket) DecodeResult {
 
 	srcLocal := d.lan.Contains(srcIP)
 	dstLocal := d.lan.Contains(dstIP)
-	direction := classifyDirection(srcLocal, dstLocal)
-
-	var localIP, remoteIP net.IP
-	var localMAC net.HardwareAddr
-	var localPort, remotePort int
-	if srcLocal {
-		localIP, remoteIP = srcIP, dstIP
-		localPort, remotePort = srcPort, dstPort
-		localMAC = d.eth.SrcMAC
-	} else {
-		localIP, remoteIP = dstIP, srcIP
-		localPort, remotePort = dstPort, srcPort
-		localMAC = d.eth.DstMAC
-	}
 
 	ts := pkt.Timestamp
 	if ts.IsZero() {
 		ts = time.Now()
 	}
+	bytes := len(pkt.Data)
 
-	result.Flow = FlowEvent{
+	switch {
+	case srcLocal && dstLocal:
+		// LAN-to-LAN: record from both hosts' perspectives so the receiving
+		// side (e.g. this machine, if it's the one being contacted/scanned by
+		// another LAN device) shows up in its own stats and detectors too.
+		result.Flow = buildFlowEvent(store.DirLANOut, proto, srcIP, srcPort, dstIP, dstPort, d.eth.SrcMAC, ts, bytes, true)
+		result.HasFlow = true
+		result.Flow2 = buildFlowEvent(store.DirLANIn, proto, dstIP, dstPort, srcIP, srcPort, d.eth.DstMAC, ts, bytes, false)
+		result.HasFlow2 = true
+
+		if haveUDP && (srcPort == dnsServicePort || dstPort == dnsServicePort) {
+			if q, ok := d.decodeDNSQuery(srcIP.String(), ts); ok {
+				result.DNS, result.HasDNS = q, true
+			}
+		}
+
+	case srcLocal: // LAN -> WAN
+		result.Flow = buildFlowEvent(store.DirLANToWAN, proto, srcIP, srcPort, dstIP, dstPort, d.eth.SrcMAC, ts, bytes, true)
+		result.HasFlow = true
+		if haveUDP && (srcPort == dnsServicePort || dstPort == dnsServicePort) {
+			if q, ok := d.decodeDNSQuery(srcIP.String(), ts); ok {
+				result.DNS, result.HasDNS = q, true
+			}
+		}
+
+	case dstLocal: // WAN -> LAN
+		result.Flow = buildFlowEvent(store.DirWANToLAN, proto, dstIP, dstPort, srcIP, srcPort, d.eth.DstMAC, ts, bytes, false)
+		result.HasFlow = true
+		if haveUDP && (srcPort == dnsServicePort || dstPort == dnsServicePort) {
+			if q, ok := d.decodeDNSQuery(dstIP.String(), ts); ok {
+				result.DNS, result.HasDNS = q, true
+			}
+		}
+
+	default:
+		// Neither side is in the configured LAN subnet — shouldn't happen
+		// given the BPF filter, but there's no sensible "local" host to
+		// attribute a flow to, so drop it rather than fabricate one.
+	}
+
+	return result
+}
+
+// buildFlowEvent constructs a FlowEvent from the perspective of localIP.
+func buildFlowEvent(direction, proto int, localIP net.IP, localPort int, remoteIP net.IP, remotePort int, localMAC net.HardwareAddr, ts time.Time, bytes int, isLocalSrc bool) FlowEvent {
+	return FlowEvent{
 		Key: FlowKey{
 			Direction:  direction,
 			Proto:      proto,
@@ -145,19 +189,10 @@ func (d *Decoder) Decode(pkt RawPacket) DecodeResult {
 			RemotePort: remotePort,
 		},
 		Timestamp:  ts,
-		Bytes:      len(pkt.Data),
-		IsLocalSrc: srcLocal,
+		Bytes:      bytes,
+		IsLocalSrc: isLocalSrc,
 		LocalMAC:   localMAC.String(),
 	}
-	result.HasFlow = true
-
-	if haveUDP && (srcPort == dnsServicePort || dstPort == dnsServicePort) {
-		if q, ok := d.decodeDNSQuery(localIP.String(), ts); ok {
-			result.DNS, result.HasDNS = q, true
-		}
-	}
-
-	return result
 }
 
 // decodeDNSQuery manually decodes the UDP payload as DNS — gopacket's

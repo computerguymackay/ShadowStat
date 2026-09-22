@@ -7,6 +7,8 @@ import (
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
+
+	"ShadowStat/internal/store"
 )
 
 func synthTCPPacket(t *testing.T, srcMAC, dstMAC net.HardwareAddr, srcIP, dstIP net.IP, srcPort, dstPort uint16, payload []byte) []byte {
@@ -236,5 +238,57 @@ func TestDecodeClassifiesWANToLAN(t *testing.T) {
 	}
 	if evt.LocalMAC != dstMAC.String() {
 		t.Errorf("local MAC = %q, want %q", evt.LocalMAC, dstMAC.String())
+	}
+}
+
+func TestDecodeLANToLANProducesBothPerspectives(t *testing.T) {
+	_, lan, err := net.ParseCIDR("192.168.1.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := NewDecoder(lan)
+
+	scannerMAC, _ := net.ParseMAC("aa:bb:cc:dd:ee:01")
+	targetMAC, _ := net.ParseMAC("aa:bb:cc:dd:ee:02")
+	// A LAN device (scanner) probing another LAN device (target) — both
+	// addresses are within the configured subnet.
+	data := synthTCPPacket(t, scannerMAC, targetMAC,
+		net.ParseIP("192.168.1.60"), net.ParseIP("192.168.1.50"),
+		51000, 22, []byte(""))
+
+	res := d.Decode(RawPacket{Data: data, Timestamp: time.Unix(1000, 0)})
+	if !res.HasFlow || !res.HasFlow2 {
+		t.Fatalf("expected both flow perspectives, got HasFlow=%v HasFlow2=%v", res.HasFlow, res.HasFlow2)
+	}
+
+	initiator := res.Flow
+	if initiator.Key.Direction != store.DirLANOut {
+		t.Errorf("initiator direction = %d, want %d (DirLANOut)", initiator.Key.Direction, store.DirLANOut)
+	}
+	if initiator.Key.LocalIP != "192.168.1.60" || initiator.Key.RemoteIP != "192.168.1.50" {
+		t.Errorf("initiator local/remote = %s/%s, want 192.168.1.60/192.168.1.50", initiator.Key.LocalIP, initiator.Key.RemoteIP)
+	}
+	if !initiator.IsLocalSrc {
+		t.Error("expected initiator IsLocalSrc = true")
+	}
+	if initiator.LocalMAC != scannerMAC.String() {
+		t.Errorf("initiator MAC = %q, want %q", initiator.LocalMAC, scannerMAC.String())
+	}
+
+	target := res.Flow2
+	if target.Key.Direction != store.DirLANIn {
+		t.Errorf("target direction = %d, want %d (DirLANIn)", target.Key.Direction, store.DirLANIn)
+	}
+	if target.Key.LocalIP != "192.168.1.50" || target.Key.RemoteIP != "192.168.1.60" {
+		t.Errorf("target local/remote = %s/%s, want 192.168.1.50/192.168.1.60", target.Key.LocalIP, target.Key.RemoteIP)
+	}
+	if target.Key.LocalPort != 22 {
+		t.Errorf("target local port = %d, want 22 (the probed port)", target.Key.LocalPort)
+	}
+	if target.IsLocalSrc {
+		t.Error("expected target IsLocalSrc = false")
+	}
+	if target.LocalMAC != targetMAC.String() {
+		t.Errorf("target MAC = %q, want %q", target.LocalMAC, targetMAC.String())
 	}
 }

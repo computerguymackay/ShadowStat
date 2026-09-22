@@ -427,7 +427,7 @@
       table.hidden = false;
       emptyEl.hidden = true;
 
-      const dirLabels = ["LAN→WAN", "WAN→LAN", "inter-VLAN"];
+      const dirLabels = ["LAN→WAN", "WAN→LAN", "LAN→LAN (out)", "LAN→LAN (in)"];
       for (const f of data.flows) {
         const tr = document.createElement("tr");
         tr.appendChild(td("Peer", f.RemoteIP));

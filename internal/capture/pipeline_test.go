@@ -5,6 +5,7 @@ import (
 	"context"
 	"net"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcapgo"
 
+	"ShadowStat/internal/detect"
 	"ShadowStat/internal/store"
 )
 
@@ -177,5 +179,85 @@ func TestPipelineLearnsDeviceNameEndToEnd(t *testing.T) {
 	}
 	if !found.DisplayName.Valid || found.DisplayName.String != "my-laptop" {
 		t.Errorf("display_name = %+v, want %q", found.DisplayName, "my-laptop")
+	}
+}
+
+// TestPipelineDetectsLANToLANPortScan replays a simulated LAN-to-LAN port
+// scan — another device on the LAN probing many ports on this machine —
+// through the real capture pipeline, then runs the actual PortScan detector
+// against the resulting database. This is the exact scenario of running
+// nmap from another machine at the ShadowStat box itself, end to end
+// (decode -> pipeline -> store -> detector), not just one piece of it.
+func TestPipelineDetectsLANToLANPortScan(t *testing.T) {
+	scannerMAC, _ := net.ParseMAC("aa:bb:cc:dd:ee:05")
+	targetMAC, _ := net.ParseMAC("aa:bb:cc:dd:ee:06")
+
+	var buf bytes.Buffer
+	w := pcapgo.NewWriter(&buf)
+	if err := w.WriteFileHeader(65536, layers.LinkTypeEthernet); err != nil {
+		t.Fatalf("write pcap header: %v", err)
+	}
+	now := time.Unix(1000, 0)
+	for port := uint16(1); port <= 20; port++ {
+		pkt := synthTCPPacket(t, scannerMAC, targetMAC,
+			net.ParseIP("192.168.1.60"), net.ParseIP("192.168.1.100"), 51000, port, nil)
+		ci := gopacket.CaptureInfo{Timestamp: now, CaptureLength: len(pkt), Length: len(pkt)}
+		if err := w.WritePacket(ci, pkt); err != nil {
+			t.Fatalf("write pcap packet: %v", err)
+		}
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "shadowstat.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open test db: %v", err)
+	}
+	defer db.Close()
+
+	src, err := NewReplaySource(&buf)
+	if err != nil {
+		t.Fatalf("open replay source: %v", err)
+	}
+	_, lan, err := net.ParseCIDR("192.168.1.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pipeline := NewPipeline(db, src, lan, 20*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if err := pipeline.Run(ctx); err != nil {
+		t.Fatalf("pipeline run: %v", err)
+	}
+
+	// Run the detector against the same "now" the replayed packets were
+	// timestamped with, not the real wall clock — the pcap replay preserves
+	// packet timestamps (here, `now` = time.Unix(1000, 0)) rather than
+	// rewriting them to the moment the test happens to run.
+	detect.PortScan(db, now)
+
+	hosts, err := db.ListHosts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var target *store.Host
+	for i := range hosts {
+		if hosts[i].IP == "192.168.1.100" {
+			target = &hosts[i]
+		}
+	}
+	if target == nil {
+		t.Fatalf("expected a host for 192.168.1.100 (the scan target), got %+v", hosts)
+	}
+
+	alerts, err := db.ListAlertsForHost(target.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(alerts) != 1 || alerts[0].Kind != store.AlertKindPortScan {
+		t.Fatalf("expected 1 port_scan alert on the target host, got %+v", alerts)
+	}
+	if !strings.Contains(alerts[0].Summary, "was probed on") {
+		t.Errorf("expected the target's alert to say it was probed, got %q", alerts[0].Summary)
 	}
 }
