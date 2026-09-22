@@ -1,0 +1,30 @@
+{{define "host_detail.html"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ShadowStat — {{.HostIP}}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/static/vendor/uplot/uPlot.min.css">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1><a href="/">ShadowStat</a> / {{.HostIP}}</h1>
+    <button id="logout-btn">Log out</button>
+  </header>
+  <main data-host-id="{{.HostID}}">
+    <div id="host-graph" class="graph"></div>
+    <h2>Recent flows (last 24h)</h2>
+    <table id="flow-table" class="flow-table">
+      <thead>
+        <tr><th>Peer</th><th>Port</th><th>Proto</th><th>Direction</th><th>Sent</th><th>Received</th><th>Last seen</th></tr>
+      </thead>
+      <tbody id="flow-table-body"></tbody>
+    </table>
+  </main>
+  <script src="/static/vendor/uplot/uPlot.iife.min.js"></script>
+  <script src="/static/app.js"></script>
+  <script>ShadowStat.initHostDetail();</script>
+</body>
+</html>
+{{end}}

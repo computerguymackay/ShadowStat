@@ -1,0 +1,28 @@
+{{define "dashboard.html"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ShadowStat — Hosts</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/static/vendor/uplot/uPlot.min.css">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>ShadowStat</h1>
+    <button id="logout-btn">Log out</button>
+  </header>
+  <main>
+    <table id="host-table" class="host-table">
+      <thead>
+        <tr><th>Host</th><th>Last seen</th><th>Activity (last hour)</th></tr>
+      </thead>
+      <tbody id="host-table-body"></tbody>
+    </table>
+  </main>
+  <script src="/static/vendor/uplot/uPlot.iife.min.js"></script>
+  <script src="/static/app.js"></script>
+  <script>ShadowStat.initDashboard();</script>
+</body>
+</html>
+{{end}}
