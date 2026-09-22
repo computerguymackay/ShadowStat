@@ -28,7 +28,17 @@ DNS volume/entropy, port scanning). See Roadmap below for what's next.
 - Linux (uses AF_PACKET for capture)
 - Go 1.26+ to build
 - A network interface that can see WAN-crossing traffic — normally a NIC
-  connected to a mirrored switch port that mirrors the router's uplink
+  connected to a mirrored switch port that mirrors the router's uplink.
+  ShadowStat puts this interface into promiscuous mode itself on every start
+  (via `SetPromiscuous(true)`) — nothing to configure manually there, but the
+  switch port it's plugged into does need to actually be configured as a
+  mirror/SPAN port of the router's uplink, or there's nothing to capture.
+- **A second network interface (wired or Wi-Fi) for the machine's own
+  connectivity.** A mirror/SPAN port only ever sends the box a *copy* of
+  traffic — it's not a normal switched port, so it generally can't be relied
+  on for the box's own default route, DNS, SSH/WireGuard access, or the
+  HTTPS UI being reachable. Run the OS, remote access, and the web UI over a
+  separate NIC; dedicate the mirrored one to capture only.
 
 No other runtime dependencies: the binary is a fully static, CGO_ENABLED=0
 build (pure-Go SQLite via `modernc.org/sqlite`, pure-Go packet capture via
