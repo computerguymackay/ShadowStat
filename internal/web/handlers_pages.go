@@ -10,12 +10,20 @@ type pageHandlers struct {
 	db *store.DB
 }
 
+// pageVars is passed to every authenticated page template so the shared "nav"
+// partial has a consistent shape to read from regardless of which page included it.
+type pageVars struct {
+	Breadcrumb string // non-empty on drill-down pages, e.g. a host's IP
+	HostID     int64
+	HostIP     string
+}
+
 func (h *pageHandlers) login(w http.ResponseWriter, r *http.Request) {
 	renderTemplate(w, "login.html", nil)
 }
 
 func (h *pageHandlers) dashboard(w http.ResponseWriter, r *http.Request) {
-	renderTemplate(w, "dashboard.html", nil)
+	renderTemplate(w, "dashboard.html", &pageVars{})
 }
 
 func (h *pageHandlers) hostDetail(w http.ResponseWriter, r *http.Request) {
@@ -34,9 +42,10 @@ func (h *pageHandlers) hostDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	renderTemplate(w, "host_detail.html", map[string]any{
-		"HostID": host.ID,
-		"HostIP": host.IP,
+	renderTemplate(w, "host_detail.html", &pageVars{
+		Breadcrumb: host.IP,
+		HostID:     host.ID,
+		HostIP:     host.IP,
 	})
 }
 

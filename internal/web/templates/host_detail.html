@@ -3,24 +3,23 @@
 <head>
   <meta charset="utf-8">
   <title>ShadowStat — {{.HostIP}}</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f1115">
   <link rel="stylesheet" href="/static/vendor/uplot/uPlot.min.css">
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-  <header class="topbar">
-    <h1><a href="/">ShadowStat</a> / {{.HostIP}}</h1>
-    <button id="logout-btn">Log out</button>
-  </header>
+  {{template "nav" .}}
   <main data-host-id="{{.HostID}}">
     <div id="host-graph" class="graph"></div>
-    <h2>Recent flows (last 24h)</h2>
-    <table id="flow-table" class="flow-table">
+    <h2 class="section-title">Recent flows <span class="muted">(last 24h)</span></h2>
+    <table id="flow-table" class="data-table">
       <thead>
         <tr><th>Peer</th><th>Port</th><th>Proto</th><th>Direction</th><th>Sent</th><th>Received</th><th>Last seen</th></tr>
       </thead>
       <tbody id="flow-table-body"></tbody>
     </table>
+    <p id="flow-table-empty" class="empty-state" hidden>No flow detail in this range.</p>
   </main>
   <script src="/static/vendor/uplot/uPlot.iife.min.js"></script>
   <script src="/static/app.js"></script>

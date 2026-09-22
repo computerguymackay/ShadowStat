@@ -28,6 +28,15 @@
     return new Date(unixSeconds * 1000).toLocaleString();
   }
 
+  // Builds a <td> with a data-label attribute so the narrow-viewport CSS can
+  // render it as a "label: value" row inside a card instead of a table cell.
+  function td(label, text) {
+    const el = document.createElement("td");
+    el.dataset.label = label;
+    el.textContent = text;
+    return el;
+  }
+
   function wireLoginForm() {
     const form = document.getElementById("login-form");
     if (!form) return;
@@ -58,15 +67,26 @@
     });
   }
 
+  // Debounces window resize so uPlot instances aren't re-laid-out on every
+  // single resize event (e.g. while a mobile browser's chrome is animating
+  // in/out, or a desktop window is being dragged).
+  function onResize(fn, delay) {
+    let t;
+    window.addEventListener("resize", () => {
+      clearTimeout(t);
+      t = setTimeout(fn, delay || 150);
+    });
+  }
+
   function makeSparkline(container, points) {
     const t = points.map((p) => p.t);
     const sent = points.map((p) => p.sent);
     const recv = points.map((p) => p.recv);
-    const width = container.clientWidth || 160;
+    const width = container.clientWidth || 140;
     new uPlot(
       {
         width,
-        height: 40,
+        height: 36,
         cursor: { show: false },
         legend: { show: false },
         axes: [{ show: false }, { show: false }],
@@ -80,6 +100,7 @@
   async function initDashboard() {
     wireLogoutButton();
     const tbody = document.getElementById("host-table-body");
+    const emptyEl = document.getElementById("host-table-empty");
     let data;
     try {
       data = await api("/api/hosts");
@@ -91,21 +112,29 @@
       throw err;
     }
 
+    if (!data.hosts || data.hosts.length === 0) {
+      document.getElementById("host-table").hidden = true;
+      emptyEl.hidden = false;
+      return;
+    }
+
     for (const host of data.hosts) {
       const tr = document.createElement("tr");
+      tr.tabIndex = 0;
       tr.addEventListener("click", () => {
         window.location.href = "/hosts/" + host.id;
       });
+      tr.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          window.location.href = "/hosts/" + host.id;
+        }
+      });
 
-      const nameTd = document.createElement("td");
-      nameTd.textContent = host.display_name || host.ip;
-      tr.appendChild(nameTd);
+      tr.appendChild(td("Host", host.display_name || host.ip));
+      tr.appendChild(td("Last seen", fmtTime(host.last_seen)));
 
-      const seenTd = document.createElement("td");
-      seenTd.textContent = fmtTime(host.last_seen);
-      tr.appendChild(seenTd);
-
-      const sparkTd = document.createElement("td");
+      const sparkTd = td("Activity (last hour)", "");
       sparkTd.className = "sparkline";
       tr.appendChild(sparkTd);
 
@@ -126,6 +155,12 @@
 
     const graphEl = document.getElementById("host-graph");
     let plot;
+
+    function resizePlot() {
+      if (!plot) return;
+      plot.setSize({ width: graphEl.clientWidth, height: plot.height });
+    }
+    onResize(resizePlot);
 
     async function loadSeries(from, to) {
       const data = await api(`/api/hosts/${hostID}/series?from=${from}&to=${to}`);
@@ -164,29 +199,37 @@
 
     async function loadFlows(from, to) {
       const tbody = document.getElementById("flow-table-body");
+      const table = document.getElementById("flow-table");
+      const emptyEl = document.getElementById("flow-table-empty");
       tbody.innerHTML = "";
+
       let data;
       try {
         data = await api(`/api/hosts/${hostID}/flows?from=${from}&to=${to}&limit=200`);
       } catch (err) {
-        return; // range too old for flow detail, or other error — leave table empty
+        table.hidden = true;
+        emptyEl.hidden = false;
+        return; // range too old for flow detail, or other error
       }
+
+      if (!data.flows || data.flows.length === 0) {
+        table.hidden = true;
+        emptyEl.hidden = false;
+        return;
+      }
+      table.hidden = false;
+      emptyEl.hidden = true;
+
       const dirLabels = ["LAN→WAN", "WAN→LAN", "inter-VLAN"];
-      for (const f of data.flows || []) {
+      for (const f of data.flows) {
         const tr = document.createElement("tr");
-        [
-          f.RemoteIP,
-          f.RemotePort,
-          f.Proto,
-          dirLabels[f.Direction] || f.Direction,
-          fmtBytes(f.BytesSent),
-          fmtBytes(f.BytesRecv),
-          fmtTime(f.LastSeen),
-        ].forEach((val) => {
-          const td = document.createElement("td");
-          td.textContent = val;
-          tr.appendChild(td);
-        });
+        tr.appendChild(td("Peer", f.RemoteIP));
+        tr.appendChild(td("Port", f.RemotePort));
+        tr.appendChild(td("Proto", f.Proto));
+        tr.appendChild(td("Direction", dirLabels[f.Direction] || f.Direction));
+        tr.appendChild(td("Sent", fmtBytes(f.BytesSent)));
+        tr.appendChild(td("Received", fmtBytes(f.BytesRecv)));
+        tr.appendChild(td("Last seen", fmtTime(f.LastSeen)));
         tbody.appendChild(tr);
       }
     }

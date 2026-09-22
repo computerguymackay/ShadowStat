@@ -3,22 +3,22 @@
 <head>
   <meta charset="utf-8">
   <title>ShadowStat — Hosts</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f1115">
   <link rel="stylesheet" href="/static/vendor/uplot/uPlot.min.css">
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-  <header class="topbar">
-    <h1>ShadowStat</h1>
-    <button id="logout-btn">Log out</button>
-  </header>
+  {{template "nav" .}}
   <main>
-    <table id="host-table" class="host-table">
+    <h1 class="page-title">Hosts</h1>
+    <table id="host-table" class="data-table">
       <thead>
         <tr><th>Host</th><th>Last seen</th><th>Activity (last hour)</th></tr>
       </thead>
       <tbody id="host-table-body"></tbody>
     </table>
+    <p id="host-table-empty" class="empty-state" hidden>No hosts seen yet — traffic will appear here once capture picks something up.</p>
   </main>
   <script src="/static/vendor/uplot/uPlot.iife.min.js"></script>
   <script src="/static/app.js"></script>

@@ -1,0 +1,9 @@
+{{define "nav"}}
+<header class="topbar">
+  <div class="topbar-crumbs">
+    <a class="brand" href="/">ShadowStat</a>
+    {{if .Breadcrumb}}<span class="crumb-sep" aria-hidden="true">/</span><span class="crumb">{{.Breadcrumb}}</span>{{end}}
+  </div>
+  <button id="logout-btn" class="logout-btn" type="button" aria-label="Log out">Log out</button>
+</header>
+{{end}}
