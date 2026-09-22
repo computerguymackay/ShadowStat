@@ -97,6 +97,102 @@
     );
   }
 
+  const alertKindLabels = {
+    new_destination: "New destination",
+    beaconing: "Beaconing",
+    exfil_ratio: "Upload/download ratio",
+    dns_anomaly: "DNS anomaly",
+    port_scan: "Port scan",
+  };
+
+  // Renders a list of alerts into listEl (a <ul>), showing emptyEl instead if
+  // there are none. showHostLink includes a link to the host's detail page
+  // (used on the global alerts page; omitted on a host's own alerts section).
+  function renderAlertList(listEl, emptyEl, alerts, showHostLink) {
+    listEl.innerHTML = "";
+    if (!alerts || alerts.length === 0) {
+      listEl.hidden = true;
+      emptyEl.hidden = false;
+      return;
+    }
+    listEl.hidden = false;
+    emptyEl.hidden = true;
+
+    for (const a of alerts) {
+      const li = document.createElement("li");
+      li.className = "alert-item severity-" + a.severity + (a.acknowledged ? " acknowledged" : "");
+
+      const body = document.createElement("div");
+      body.className = "alert-body";
+
+      const summary = document.createElement("div");
+      summary.className = "alert-summary";
+      summary.textContent = a.summary;
+      body.appendChild(summary);
+
+      const meta = document.createElement("div");
+      meta.className = "alert-meta";
+      const kindSpan = document.createElement("span");
+      kindSpan.textContent = alertKindLabels[a.kind] || a.kind;
+      meta.appendChild(kindSpan);
+      const timeSpan = document.createElement("span");
+      timeSpan.textContent = fmtTime(a.detected_at);
+      meta.appendChild(timeSpan);
+      if (showHostLink) {
+        const hostLink = document.createElement("a");
+        hostLink.href = "/hosts/" + a.host_id;
+        hostLink.textContent = a.host_ip;
+        meta.appendChild(hostLink);
+      }
+      body.appendChild(meta);
+      li.appendChild(body);
+
+      if (!a.acknowledged) {
+        const btn = document.createElement("button");
+        btn.className = "alert-ack-btn";
+        btn.type = "button";
+        btn.textContent = "Acknowledge";
+        btn.addEventListener("click", async () => {
+          btn.disabled = true;
+          try {
+            await api(`/api/alerts/${a.id}/ack`, { method: "POST" });
+            li.classList.add("acknowledged");
+            btn.remove();
+          } catch (err) {
+            btn.disabled = false;
+          }
+        });
+        li.appendChild(btn);
+      }
+
+      listEl.appendChild(li);
+    }
+  }
+
+  async function initAlerts() {
+    wireLogoutButton();
+    const listEl = document.getElementById("alert-list");
+    const emptyEl = document.getElementById("alert-list-empty");
+    const toggle = document.getElementById("unacked-toggle");
+
+    async function load() {
+      let data;
+      try {
+        data = await api(`/api/alerts?unacked_only=${toggle.checked ? "1" : "0"}`);
+      } catch (err) {
+        if (err.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        throw err;
+      }
+      renderAlertList(listEl, emptyEl, data.alerts, true);
+    }
+
+    toggle.addEventListener("change", load);
+    await load();
+  }
+
   async function initDashboard() {
     wireLogoutButton();
     const tbody = document.getElementById("host-table-body");
@@ -234,9 +330,21 @@
       }
     }
 
+    async function loadAlerts() {
+      const listEl = document.getElementById("host-alert-list");
+      const emptyEl = document.getElementById("host-alert-list-empty");
+      try {
+        const data = await api(`/api/hosts/${hostID}/alerts`);
+        renderAlertList(listEl, emptyEl, data.alerts, false);
+      } catch (err) {
+        // non-fatal: leave the section empty rather than breaking the page
+      }
+    }
+
     try {
       await loadSeries(from, now);
       await loadFlows(from, now);
+      await loadAlerts();
     } catch (err) {
       if (err.status === 401) {
         window.location.href = "/login";
@@ -248,5 +356,5 @@
     wireLoginForm();
   });
 
-  window.ShadowStat = { initDashboard, initHostDetail };
+  window.ShadowStat = { initDashboard, initHostDetail, initAlerts };
 })();

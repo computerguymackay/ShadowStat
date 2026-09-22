@@ -20,6 +20,9 @@ type Pipeline struct {
 	flushEvery time.Duration
 
 	hostCache map[string]int64 // local IP -> host_id; owned solely by the flush goroutine
+
+	dnsMu  sync.Mutex
+	dnsBuf []DNSQueryEvent // buffered DNS queries between flushes, guarded by dnsMu
 }
 
 // NewPipeline builds a Pipeline. lan is the configured LAN subnet, used both to
@@ -46,8 +49,14 @@ func (p *Pipeline) Run(ctx context.Context) error {
 	go func() {
 		defer wg.Done()
 		for pkt := range packets {
-			if evt, ok := p.decoder.Decode(pkt); ok {
-				p.agg.Add(evt)
+			flow, flowOK, dns, dnsOK := p.decoder.Decode(pkt)
+			if flowOK {
+				p.agg.Add(flow)
+			}
+			if dnsOK {
+				p.dnsMu.Lock()
+				p.dnsBuf = append(p.dnsBuf, dns)
+				p.dnsMu.Unlock()
 			}
 		}
 	}()
@@ -74,38 +83,67 @@ func (p *Pipeline) Run(ctx context.Context) error {
 }
 
 func (p *Pipeline) flush() {
+	now := time.Now().Unix()
+
 	drained := p.agg.Drain()
+	if len(drained) > 0 {
+		records := make([]store.FlowRecord, 0, len(drained))
+		for key, acc := range drained {
+			hostID, err := p.resolveHost(key.LocalIP, now)
+			if err != nil {
+				log.Printf("capture: resolve host %s: %v", key.LocalIP, err)
+				continue
+			}
+			records = append(records, store.FlowRecord{
+				HostID:      hostID,
+				Direction:   key.Direction,
+				Proto:       key.Proto,
+				LocalIP:     key.LocalIP,
+				LocalPort:   key.LocalPort,
+				RemoteIP:    key.RemoteIP,
+				RemotePort:  key.RemotePort,
+				FirstSeen:   acc.FirstSeen,
+				LastSeen:    acc.LastSeen,
+				BytesSent:   acc.BytesSent,
+				BytesRecv:   acc.BytesRecv,
+				PacketsSent: acc.PacketsSent,
+				PacketsRecv: acc.PacketsRecv,
+			})
+		}
+		if err := p.db.InsertFlows(records); err != nil {
+			log.Printf("capture: insert flows: %v", err)
+		}
+	}
+
+	p.flushDNS(now)
+}
+
+func (p *Pipeline) flushDNS(now int64) {
+	p.dnsMu.Lock()
+	drained := p.dnsBuf
+	p.dnsBuf = nil
+	p.dnsMu.Unlock()
+
 	if len(drained) == 0 {
 		return
 	}
 
-	now := time.Now().Unix()
-	records := make([]store.FlowRecord, 0, len(drained))
-	for key, acc := range drained {
-		hostID, err := p.resolveHost(key.LocalIP, now)
+	records := make([]store.DNSQueryRecord, 0, len(drained))
+	for _, q := range drained {
+		hostID, err := p.resolveHost(q.LocalIP, now)
 		if err != nil {
-			log.Printf("capture: resolve host %s: %v", key.LocalIP, err)
+			log.Printf("capture: resolve host %s: %v", q.LocalIP, err)
 			continue
 		}
-		records = append(records, store.FlowRecord{
-			HostID:      hostID,
-			Direction:   key.Direction,
-			Proto:       key.Proto,
-			LocalIP:     key.LocalIP,
-			LocalPort:   key.LocalPort,
-			RemoteIP:    key.RemoteIP,
-			RemotePort:  key.RemotePort,
-			FirstSeen:   acc.FirstSeen,
-			LastSeen:    acc.LastSeen,
-			BytesSent:   acc.BytesSent,
-			BytesRecv:   acc.BytesRecv,
-			PacketsSent: acc.PacketsSent,
-			PacketsRecv: acc.PacketsRecv,
+		records = append(records, store.DNSQueryRecord{
+			HostID: hostID,
+			QName:  q.QName,
+			QType:  int(q.QType),
+			TS:     q.Timestamp.Unix(),
 		})
 	}
-
-	if err := p.db.InsertFlows(records); err != nil {
-		log.Printf("capture: insert flows: %v", err)
+	if err := p.db.InsertDNSQueries(records); err != nil {
+		log.Printf("capture: insert dns queries: %v", err)
 	}
 }
 

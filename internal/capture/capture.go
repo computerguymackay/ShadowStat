@@ -44,6 +44,16 @@ type FlowEvent struct {
 	IsLocalSrc bool // true if the packet's source side is the LAN-local address
 }
 
+// DNSQueryEvent is one observed outbound DNS query, used by the detection
+// engine's DNS volume/entropy detector. Only queries (not responses) are
+// captured, so each user lookup is recorded exactly once.
+type DNSQueryEvent struct {
+	LocalIP   string
+	QName     string
+	QType     uint16
+	Timestamp time.Time
+}
+
 // classifyDirection determines a packet's direction from which side(s) of the
 // 5-tuple fall inside the configured LAN subnet. Both-local and both-remote
 // packets shouldn't reach here given the BPF filter, but are defensively

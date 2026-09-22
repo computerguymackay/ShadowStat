@@ -1,0 +1,24 @@
+{{define "alerts.html"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ShadowStat — Alerts</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f1115">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  {{template "nav" .}}
+  <main>
+    <div class="page-header">
+      <h1 class="page-title">Alerts</h1>
+      <label class="toggle"><input type="checkbox" id="unacked-toggle" checked> Unacknowledged only</label>
+    </div>
+    <ul id="alert-list" class="alert-list"></ul>
+    <p id="alert-list-empty" class="empty-state" hidden>No alerts to show.</p>
+  </main>
+  <script src="/static/app.js"></script>
+  <script>ShadowStat.initAlerts();</script>
+</body>
+</html>
+{{end}}

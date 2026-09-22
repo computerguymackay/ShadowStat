@@ -12,6 +12,11 @@
   {{template "nav" .}}
   <main data-host-id="{{.HostID}}">
     <div id="host-graph" class="graph"></div>
+
+    <h2 class="section-title">Alerts</h2>
+    <ul id="host-alert-list" class="alert-list"></ul>
+    <p id="host-alert-list-empty" class="empty-state" hidden>No alerts for this host.</p>
+
     <h2 class="section-title">Recent flows <span class="muted">(last 24h)</span></h2>
     <table id="flow-table" class="data-table">
       <thead>

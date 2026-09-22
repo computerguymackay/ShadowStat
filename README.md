@@ -2,15 +2,18 @@
 
 A self-contained Linux network monitoring tool. Captures WAN traffic off a
 mirrored switch port and serves per-host bandwidth statistics, interactive
-historical graphs, and (in later phases) behavioral suspicious-activity
-detection — all with persistent history that survives restarts.
+historical graphs, and behavioral suspicious-activity detection — all with
+persistent history that survives restarts.
 
 ## Status
 
-MVP core: live capture → aggregation → durable two-tier SQLite storage →
-authenticated HTTPS UI with per-host stats and zoomable graphs. Behavioral
-detection, systemd service install, cert-replacement UI, and device naming
-are not yet built — see the roadmap in the plan doc for what's next.
+MVP core plus detection engine: live capture → aggregation → durable
+two-tier SQLite storage → authenticated, mobile-friendly HTTPS UI with
+per-host stats, zoomable graphs, and an alerts view fed by five behavioral
+detectors (new destinations, beaconing, upload/download ratio, DNS
+volume/entropy, port scanning). systemd service install, cert-replacement
+UI, and device naming are not yet built — see the roadmap in the plan doc
+for what's next.
 
 ## Requirements
 
@@ -75,9 +78,19 @@ pipeline, rollup/retention design, and web API. Short version:
   tables for zoomed-out, long-retention graphing.
 - `internal/rollupjob` — rolls `flows_recent` up into the rollup tables and
   prunes old data on independent tickers per granularity.
+- `internal/detect` — five periodic detectors reading the same
+  `flows_recent`/`dns_queries` data, writing deduplicated `alerts` rows:
+  **new destinations** (a peer/port not contacted by a host in 30 days),
+  **beaconing** (suspiciously regular contact intervals with one peer — works
+  on encrypted traffic since it only looks at timing), **exfil ratio**
+  (upload far exceeding download to WAN), **DNS anomaly** (abnormal query
+  volume, or a high-entropy queried domain suggestive of a DGA), and **port
+  scan** (one host fanning out to many distinct remote ip:port pairs in a
+  short window).
 - `internal/web` — HTTPS-only (`net/http` + `crypto/tls`), session auth via
   argon2id-hashed credentials, JSON API driving a vendored uPlot frontend for
-  zoomable graphs from year view down to single-minute detail.
+  zoomable graphs from year view down to single-minute detail, plus an
+  alerts page/API with acknowledge.
 
 ## Testing without a mirrored switch port
 

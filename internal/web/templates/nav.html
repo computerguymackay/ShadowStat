@@ -1,7 +1,13 @@
 {{define "nav"}}
 <header class="topbar">
-  <div class="topbar-crumbs">
+  <div class="topbar-left">
     <a class="brand" href="/">ShadowStat</a>
+    <nav class="nav-links">
+      <a href="/" class="nav-link{{if and (not .OnAlertsPage) (not .Breadcrumb)}} active{{end}}">Hosts</a>
+      <a href="/alerts" class="nav-link{{if .OnAlertsPage}} active{{end}}">
+        Alerts{{if .UnackedAlerts}}<span class="badge">{{.UnackedAlerts}}</span>{{end}}
+      </a>
+    </nav>
     {{if .Breadcrumb}}<span class="crumb-sep" aria-hidden="true">/</span><span class="crumb">{{.Breadcrumb}}</span>{{end}}
   </div>
   <button id="logout-btn" class="logout-btn" type="button" aria-label="Log out">Log out</button>

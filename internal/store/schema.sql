@@ -107,3 +107,48 @@ CREATE TABLE IF NOT EXISTS rollup_1d (
     PRIMARY KEY (host_id, direction, bucket_ts)
 );
 CREATE INDEX IF NOT EXISTS idx_rollup_1d_time ON rollup_1d(bucket_ts);
+
+-- ── Detection engine ─────────────────────────────────────────────────
+
+-- Every distinct (host, remote peer) pair ever confirmed as "known", used by
+-- the new-destination detector to recognize a peer not contacted in the
+-- trailing novelty window (as opposed to a peer never seen at all).
+CREATE TABLE IF NOT EXISTS known_peers (
+    host_id     INTEGER NOT NULL REFERENCES hosts(id),
+    remote_ip   TEXT NOT NULL,
+    remote_port INTEGER NOT NULL,
+    first_seen  INTEGER NOT NULL,
+    last_seen   INTEGER NOT NULL,
+    PRIMARY KEY (host_id, remote_ip, remote_port)
+);
+CREATE INDEX IF NOT EXISTS idx_known_peers_last_seen ON known_peers(last_seen);
+
+-- Individual DNS queries observed on the WAN-crossing capture interface.
+-- Short-retention (pruned separately from the main flow/rollup tiers) — this
+-- exists purely to feed the DNS volume/entropy detector, not for historical
+-- browsing.
+CREATE TABLE IF NOT EXISTS dns_queries (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    host_id INTEGER NOT NULL REFERENCES hosts(id),
+    qname   TEXT NOT NULL,
+    qtype   INTEGER NOT NULL,
+    ts      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dns_queries_host_ts ON dns_queries(host_id, ts);
+CREATE INDEX IF NOT EXISTS idx_dns_queries_ts ON dns_queries(ts);
+
+-- Alerts raised by the detection engine.
+CREATE TABLE IF NOT EXISTS alerts (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    host_id      INTEGER NOT NULL REFERENCES hosts(id),
+    kind         TEXT NOT NULL,
+    severity     TEXT NOT NULL,
+    summary      TEXT NOT NULL,
+    detail       TEXT,
+    dedupe_key   TEXT NOT NULL,
+    detected_at  INTEGER NOT NULL,
+    acknowledged INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_alerts_detected_at ON alerts(detected_at);
+CREATE INDEX IF NOT EXISTS idx_alerts_host ON alerts(host_id, detected_at);
+CREATE INDEX IF NOT EXISTS idx_alerts_dedupe ON alerts(host_id, kind, dedupe_key, detected_at);
