@@ -32,7 +32,28 @@ DNS volume/entropy, port scanning). See Roadmap below for what's next.
 
 No other runtime dependencies: the binary is a fully static, CGO_ENABLED=0
 build (pure-Go SQLite via `modernc.org/sqlite`, pure-Go packet capture via
-`gopacket/pcapgo`'s AF_PACKET support — no libpcap, no cgo).
+`gopacket/pcapgo`'s AF_PACKET support — no libpcap, no cgo). `install-service`
+additionally shells out to `useradd` and `systemctl`/`rc-update` (both
+standard on any systemd or OpenRC distro), but only if you use it.
+
+## Installation (fresh machine)
+
+```sh
+git clone git@github.com:computerguymackay/ShadowStat.git
+cd ShadowStat
+make build              # -> bin/shadowstat, a single static binary
+
+./bin/shadowstat run    # interactive first-run setup (see below), Ctrl+C once it's serving
+
+sudo ./bin/shadowstat install-service   # optional: run it as a proper system service
+```
+
+That's the whole install — no package manager, no separate config step, no
+dependencies to install beyond Go itself to build it. The interactive `run`
+step is required at least once (it's what creates the database and prompts
+for capture interface/LAN subnet/retention/admin credentials); skipping
+straight to `install-service` on a machine that's never been set up will
+refuse with a clear message telling you to do that first.
 
 ## Build
 
@@ -100,6 +121,18 @@ lives in one directory, resolved in this order:
 1. `--data-dir <path>` flag, if given
 2. `/var/lib/shadowstat`, if running as root or that path is writable
 3. `$XDG_DATA_HOME/shadowstat`, or `~/.local/share/shadowstat` otherwise
+
+## Command-line reference
+
+`shadowstat` with no subcommand is equivalent to `shadowstat run`.
+
+| Subcommand | Flags | What it does |
+|---|---|---|
+| `run` | `--data-dir <path>` — see [Data directory](#data-directory) above | Starts capture + web UI. Runs the interactive first-time setup wizard first if no completed setup exists (requires a terminal; exits with code `10` if none is attached). |
+| `install-service` | `--user <name>` (default `shadowstat`) — system account to run as<br>`--root` — run as root instead of a dedicated user<br>`--data-dir <path>` — use this exact directory, skipping auto-migration | Installs and starts ShadowStat as a systemd/OpenRC service. Requires root. See [Running as a service](#running-as-a-service). |
+| `uninstall-service` | none | Stops and removes the service. Requires root. Database/cert/service user are left in place. |
+| `status` | none | Prints service status (`systemctl status` / `rc-service status` under the hood), or says it isn't installed. No root required. |
+| `version` | none | Prints the build version. |
 
 ## Architecture
 
