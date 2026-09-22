@@ -20,9 +20,15 @@ func Execute() int {
 		return runCmd(args)
 	case "version":
 		return versionCmd(args)
+	case "install-service":
+		return installServiceCmd(args)
+	case "uninstall-service":
+		return uninstallServiceCmd(args)
+	case "status":
+		return statusCmd(args)
 	default:
 		fmt.Fprintf(os.Stderr, "shadowstat: unknown subcommand %q\n", sub)
-		fmt.Fprintln(os.Stderr, "usage: shadowstat [run|version] [flags]")
+		fmt.Fprintln(os.Stderr, "usage: shadowstat [run|install-service|uninstall-service|status|version] [flags]")
 		return 2
 	}
 }

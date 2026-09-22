@@ -7,8 +7,8 @@ persistent history that survives restarts.
 
 ## Status
 
-MVP core plus detection engine and device naming: live capture →
-aggregation → durable two-tier SQLite storage → authenticated,
+MVP core plus detection engine, device naming, and service install: live
+capture → aggregation → durable two-tier SQLite storage → authenticated,
 mobile-friendly HTTPS UI with per-host stats (shown by name when known,
 learned from DHCP), zoomable graphs, and an alerts view fed by five
 behavioral detectors (new destinations, beaconing, upload/download ratio,
@@ -16,11 +16,6 @@ DNS volume/entropy, port scanning). See Roadmap below for what's next.
 
 ## Roadmap
 
-- **Service install** — `install-service`/`uninstall-service`/`status`
-  subcommands, systemd (+ openrc/sysvinit where practical) unit generation,
-  a dedicated unprivileged service user with `AmbientCapabilities=CAP_NET_RAW
-  CAP_NET_ADMIN` so capture works without running as root or depending on
-  file capabilities surviving a rebuild.
 - **Cert replacement UI** — swap the self-signed cert for a real one (or
   ACME) via the settings page, hot-swapped without a restart.
 - **Pluggable sFlow/NetFlow sources** — `capture.Source` already has the
@@ -69,6 +64,34 @@ If launched with no database and no interactive terminal available (e.g. by
 a process supervisor before setup has ever completed), the binary exits
 immediately with a clear error rather than hanging on a prompt.
 
+### Running as a service
+
+```sh
+sudo ./bin/shadowstat install-service
+```
+
+This installs and starts ShadowStat as a systemd service (best-effort OpenRC
+support too — see below), running as a dedicated unprivileged `shadowstat`
+system user with `CAP_NET_RAW`/`CAP_NET_ADMIN` granted via the unit's
+`AmbientCapabilities`, not file capabilities on the binary — so, unlike
+`make setcap`, it survives a rebuild.
+
+- **Refuses to run** if setup hasn't completed yet — do an interactive `run`
+  first — or if another `shadowstat run` process is already active (it would
+  conflict on the capture interface and HTTPS port).
+- **Migrates automatically**: if `/var/lib/shadowstat` has no database yet
+  but one exists from an earlier interactive run (checked via `$SUDO_USER`'s
+  own data dir), it's *moved* there and ownership handed to the service user
+  — your existing history is preserved, not discarded.
+- `--user <name>` to use a different service account, `--root` to run as
+  root instead of a dedicated user, `--data-dir <path>` to point at a
+  database elsewhere without migrating anything.
+
+Manage it afterward with `shadowstat status` (or `systemctl status
+shadowstat`) and `journalctl -u shadowstat -f` for logs. `sudo shadowstat
+uninstall-service` stops and removes the service — the database, cert, and
+service user are left in place.
+
 ### Data directory
 
 Everything (`shadowstat.db` + its WAL sidecar files, `cert.pem`, `key.pem`)
@@ -112,6 +135,9 @@ pipeline, rollup/retention design, and web API. Short version:
   argon2id-hashed credentials, JSON API driving a vendored uPlot frontend for
   zoomable graphs from year view down to single-minute detail, plus an
   alerts page/API with acknowledge.
+- `internal/service` — systemd/OpenRC unit generation, system user creation,
+  and dev-to-system data dir migration behind `install-service` /
+  `uninstall-service` / `status`.
 
 ## Testing without a mirrored switch port
 
