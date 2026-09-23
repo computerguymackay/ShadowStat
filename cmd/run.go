@@ -28,6 +28,8 @@ const exitNoInteractiveSetup = 10
 func runCmd(args []string) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	dataDirFlag := fs.String("data-dir", "", "directory for the database, TLS cert/key, and WAL files (default: auto-detected)")
+	promiscuousFlag := fs.Bool("promiscuous", true, "capture in promiscuous mode (needed on a real mirror port to see other hosts' traffic; "+
+		"disable for testing on a regular workstation to avoid requiring CAP_NET_ADMIN — capture is then limited to this host's own traffic)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -89,7 +91,7 @@ func runCmd(args []string) int {
 		return 1
 	}
 
-	src, err := capture.NewPcapgoSource(settings.CaptureInterface, bpfFilter)
+	src, err := capture.NewPcapgoSource(settings.CaptureInterface, bpfFilter, *promiscuousFlag)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "shadowstat: open capture interface %q: %v\n"+
 			"(promiscuous-mode capture requires CAP_NET_RAW/CAP_NET_ADMIN or root)\n", settings.CaptureInterface, err)
@@ -110,8 +112,12 @@ func runCmd(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	fmt.Printf("shadowstat: capturing on %s (LAN %s), listening on https://%s\n",
-		settings.CaptureInterface, settings.LANSubnetCIDR, settings.HTTPListenAddr)
+	promiscNote := ""
+	if !*promiscuousFlag {
+		promiscNote = ", promiscuous mode OFF (only this host's own traffic will be seen)"
+	}
+	fmt.Printf("shadowstat: capturing on %s (LAN %s)%s, listening on https://%s\n",
+		settings.CaptureInterface, settings.LANSubnetCIDR, promiscNote, settings.HTTPListenAddr)
 
 	var wg sync.WaitGroup
 	var serverErr error

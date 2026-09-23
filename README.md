@@ -164,7 +164,7 @@ lives in one directory, resolved in this order:
 
 | Subcommand | Flags | What it does |
 |---|---|---|
-| `run` | `--data-dir <path>` — see [Data directory](#data-directory) above | Starts capture + web UI. Runs the interactive first-time setup wizard first if no completed setup exists (requires a terminal; exits with code `10` if none is attached). |
+| `run` | `--data-dir <path>` — see [Data directory](#data-directory) above<br>`--promiscuous` (default `true`) — set `false` to limit capture to this host's own traffic, useful for testing on a regular workstation without needing `CAP_NET_ADMIN` | Starts capture + web UI. Runs the interactive first-time setup wizard first if no completed setup exists (requires a terminal; exits with code `10` if none is attached). |
 | `install-service` | `--user <name>` (default `shadowstat`) — system account to run as<br>`--root` — run as root instead of a dedicated user<br>`--data-dir <path>` — use this exact directory, skipping auto-migration | Installs and starts ShadowStat as a systemd/OpenRC service. Requires root. See [Running as a service](#running-as-a-service). |
 | `uninstall-service` | none | Stops and removes the service. Requires root. Database/cert/service user are left in place. |
 | `status` | none | Prints service status (`systemctl status` / `rc-service status` under the hood), or says it isn't installed. No root required. |

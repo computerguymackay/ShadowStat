@@ -46,24 +46,35 @@ type PcapgoSource struct {
 	dropped uint64
 }
 
-// NewPcapgoSource opens ifaceName in promiscuous mode and applies filter.
-func NewPcapgoSource(ifaceName string, filter []bpf.RawInstruction) (*PcapgoSource, error) {
+// NewPcapgoSource opens ifaceName and applies filter. If promiscuous is true
+// (the normal case for a real mirror-port deployment, where traffic for
+// other hosts needs to be captured), promiscuous mode is enabled — skipping
+// the privileged PACKET_ADD_MEMBERSHIP call if something else (another
+// capture tool, a systemd unit, a manual `ip link set promisc on`) already
+// has it set. If promiscuous is false, capture is limited to this host's own
+// traffic (what the switch delivers to this port anyway) plus broadcast —
+// useful for testing on a regular workstation without granting
+// CAP_NET_ADMIN, or in the increasingly rare case that a machine can't
+// tolerate promiscuous mode for its own reasons even though it doesn't
+// affect existing connections.
+func NewPcapgoSource(ifaceName string, filter []bpf.RawInstruction, promiscuous bool) (*PcapgoSource, error) {
 	handle, err := pcapgo.NewEthernetHandle(ifaceName)
 	if err != nil {
 		return nil, fmt.Errorf("open interface %s: %w", ifaceName, err)
 	}
 
-	// Skip the privileged call entirely if something else (another capture
-	// tool, a systemd unit, a manual `ip link set promisc on`) already has
-	// the interface in promiscuous mode — one less use of CAP_NET_ADMIN than
-	// strictly necessary. If the check itself fails for any reason, fall back
-	// to just setting it unconditionally rather than blocking startup on a
-	// read-only sysfs probe that isn't essential.
-	already, checkErr := isPromiscuous(ifaceName)
-	if checkErr != nil || !already {
-		if err := handle.SetPromiscuous(true); err != nil {
-			handle.Close()
-			return nil, fmt.Errorf("set promiscuous mode on %s: %w", ifaceName, err)
+	if promiscuous {
+		// Skip the privileged call entirely if something else already has
+		// the interface in promiscuous mode — one less use of CAP_NET_ADMIN
+		// than strictly necessary. If the check itself fails for any reason,
+		// fall back to just setting it unconditionally rather than blocking
+		// startup on a read-only sysfs probe that isn't essential.
+		already, checkErr := isPromiscuous(ifaceName)
+		if checkErr != nil || !already {
+			if err := handle.SetPromiscuous(true); err != nil {
+				handle.Close()
+				return nil, fmt.Errorf("set promiscuous mode on %s: %w", ifaceName, err)
+			}
 		}
 	}
 	if len(filter) > 0 {
