@@ -32,6 +32,7 @@ go.work.sum
 # IDE / editor
 .idea/
 .vscode/
+.claude/
 *.swp
 
 # OS files
