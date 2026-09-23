@@ -1,9 +1,7 @@
 package capture
 
 import (
-	"encoding/binary"
 	"fmt"
-	"net"
 
 	"golang.org/x/net/bpf"
 )
@@ -11,53 +9,41 @@ import (
 // snapLen is the number of bytes the kernel is told to keep for accepted packets.
 const snapLen = 262144
 
-// broadcastAddr is 255.255.255.255 as a big-endian uint32, matched below so
-// DHCP DISCOVER/REQUEST broadcasts (which the LAN subnet address check alone
-// would reject — their destination is the broadcast address, not a LAN host)
-// still reach the device-naming decoder.
-const broadcastAddr = 0xFFFFFFFF
+const (
+	etherTypeOff          = 12
+	etherTypeIP4          = 0x0800
+	etherTypeVLAN         = 0x8100 // 802.1Q; the tag itself is 4 bytes, shifting everything after it
+	vlanInnerEtherTypeOff = 16     // offset of the real EtherType inside a single 802.1Q tag
+)
 
-// CompileLANFilter builds a raw BPF program that accepts IPv4 Ethernet frames
-// where either the source or destination address falls within lanCIDR, plus
-// LAN broadcast traffic (needed for DHCP-based device naming), and rejects
+// CompileIPv4Filter builds a raw BPF program that accepts any IPv4 Ethernet
+// frame — untagged, or carrying a single 802.1Q VLAN tag — and rejects
 // everything else. Built by hand (via golang.org/x/net/bpf) rather than a
 // filter-string compiler, since we deliberately avoid any libpcap dependency.
 //
-// Known MVP limitation: IPv4 only. IPv6 LAN subnets are not yet supported by
-// this filter (tracked as future work alongside the rest of the detection roadmap).
-func CompileLANFilter(lanCIDR string) ([]bpf.RawInstruction, error) {
-	_, ipnet, err := net.ParseCIDR(lanCIDR)
-	if err != nil {
-		return nil, fmt.Errorf("parse LAN subnet: %w", err)
-	}
-	ip4 := ipnet.IP.To4()
-	if ip4 == nil {
-		return nil, fmt.Errorf("LAN subnet must be IPv4: %s", lanCIDR)
-	}
-	mask := binary.BigEndian.Uint32(ipnet.Mask)
-	network := binary.BigEndian.Uint32(ip4) & mask
-
-	// Ethernet header: 14 bytes. IPv4 header: src at offset 26, dst at offset 30.
-	const (
-		etherTypeOff = 12
-		srcIPOff     = 26
-		dstIPOff     = 30
-		etherTypeIP4 = 0x0800
-	)
-
+// This deliberately does NOT filter by LAN-subnet address at the BPF level
+// (an earlier version did): a mirrored trunk port carrying multiple VLANs
+// means "does this address fall in the configured subnet" isn't answerable
+// from a fixed byte offset alone once tagging is involved, and getting that
+// address-matching logic right by hand in raw BPF twice already produced
+// real bugs (broadcast destinations, then VLAN tags shifting every
+// downstream offset). Address/subnet filtering is instead done in Go
+// (Decoder, using net.IPNet.Contains) once the packet is already fully
+// parsed — simpler, less error-prone, and cheap enough at the traffic
+// volumes this is built for. This BPF program's only job is cutting non-IP
+// noise (ARP, STP, IPv6 for now, etc.) before it reaches userspace at all.
+//
+// Known MVP limitations: IPv4 only (IPv6 isn't decoded yet), and only a
+// single 802.1Q tag (QinQ/double-tagging isn't matched).
+func CompileIPv4Filter() ([]bpf.RawInstruction, error) {
 	prog := []bpf.Instruction{
-		bpf.LoadAbsolute{Off: etherTypeOff, Size: 2},                       // 0
-		bpf.JumpIf{Cond: bpf.JumpNotEqual, Val: etherTypeIP4, SkipTrue: 8}, // 1: not IPv4 -> reject (idx 10)
-		bpf.LoadAbsolute{Off: srcIPOff, Size: 4},                           // 2
-		bpf.ALUOpConstant{Op: bpf.ALUOpAnd, Val: mask},                     // 3
-		bpf.JumpIf{Cond: bpf.JumpEqual, Val: network, SkipTrue: 6},         // 4: src matches -> accept (idx 11)
-		bpf.LoadAbsolute{Off: dstIPOff, Size: 4},                           // 5
-		bpf.ALUOpConstant{Op: bpf.ALUOpAnd, Val: mask},                     // 6
-		bpf.JumpIf{Cond: bpf.JumpEqual, Val: network, SkipTrue: 3},         // 7: dst matches -> accept (idx 11)
-		bpf.LoadAbsolute{Off: dstIPOff, Size: 4},                           // 8: reload dst, unmasked
-		bpf.JumpIf{Cond: bpf.JumpEqual, Val: broadcastAddr, SkipTrue: 1},   // 9: broadcast -> accept (idx 11)
-		bpf.RetConstant{Val: 0},                                            // 10: reject
-		bpf.RetConstant{Val: snapLen},                                      // 11: accept
+		bpf.LoadAbsolute{Off: etherTypeOff, Size: 2},                        // 0: outer ethertype
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: etherTypeIP4, SkipTrue: 4},     // 1: untagged IPv4 -> accept (idx 6)
+		bpf.JumpIf{Cond: bpf.JumpNotEqual, Val: etherTypeVLAN, SkipTrue: 2}, // 2: not tagged either -> reject (idx 5)
+		bpf.LoadAbsolute{Off: vlanInnerEtherTypeOff, Size: 2},               // 3: inner ethertype (past the 4-byte tag)
+		bpf.JumpIf{Cond: bpf.JumpEqual, Val: etherTypeIP4, SkipTrue: 1},     // 4: tagged IPv4 -> accept (idx 6)
+		bpf.RetConstant{Val: 0},                                             // 5: reject
+		bpf.RetConstant{Val: snapLen},                                       // 6: accept
 	}
 
 	raw, err := bpf.Assemble(prog)

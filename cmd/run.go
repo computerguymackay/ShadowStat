@@ -83,7 +83,7 @@ func runCmd(args []string) int {
 		return 1
 	}
 
-	bpfFilter, err := capture.CompileLANFilter(settings.LANSubnetCIDR)
+	bpfFilter, err := capture.CompileIPv4Filter()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "shadowstat: compile capture filter: %v\n", err)
 		return 1

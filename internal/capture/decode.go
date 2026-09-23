@@ -47,6 +47,10 @@ type Decoder struct {
 	decoded []gopacket.LayerType
 
 	eth   layers.Ethernet
+	dot1q layers.Dot1Q // 802.1Q VLAN tag; gopacket auto-chains through this (EthernetType 0x8100 is
+	// registered to LayerTypeDot1Q in its own layer-type table), so just
+	// registering the decoder here is enough — no manual dispatch needed,
+	// unlike DNS/DHCP below which key off a UDP port instead of an EtherType.
 	ip4   layers.IPv4
 	ip6   layers.IPv6
 	tcp   layers.TCP
@@ -64,7 +68,7 @@ func NewDecoder(lan *net.IPNet) *Decoder {
 	d := &Decoder{lan: lan}
 	d.parser = gopacket.NewDecodingLayerParser(
 		layers.LayerTypeEthernet,
-		&d.eth, &d.ip4, &d.ip6, &d.tcp, &d.udp, &d.icmp4, &d.icmp6,
+		&d.eth, &d.dot1q, &d.ip4, &d.ip6, &d.tcp, &d.udp, &d.icmp4, &d.icmp6,
 	)
 	// A packet missing a layer we didn't register a decoder for (e.g. an
 	// unsupported next-header) should not abort decoding of the layers found so far.

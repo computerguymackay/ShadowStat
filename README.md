@@ -177,11 +177,18 @@ pipeline, rollup/retention design, and web API. Short version:
 
 - `internal/capture` — pulls packets off an AF_PACKET socket (via
   `gopacket/pcapgo`), decodes them, and aggregates in memory before flushing
-  batches to SQLite on a timer (never per-packet writes). Also opportunistically
-  learns each host's MAC (from the Ethernet header of its own traffic) and
-  hostname (from DHCP option 12, decoded off broadcast DISCOVER/REQUEST
-  packets — the BPF filter has a dedicated branch admitting broadcast traffic
-  for exactly this), so hosts can show up as names instead of bare IPs.
+  batches to SQLite on a timer (never per-packet writes). Handles both
+  untagged and single-802.1Q-tagged (VLAN) traffic — useful when the
+  mirrored port is a trunk carrying multiple VLANs rather than a single flat
+  subnet. The kernel-level BPF filter only cuts non-IPv4 noise (ARP, STP,
+  IPv6 for now); LAN-subnet address matching happens entirely in Go
+  (`Decoder`) once a packet is fully parsed, rather than by hand-computing
+  fixed byte offsets in BPF — a VLAN tag shifts every offset after it, which
+  is exactly what broke address matching at the BPF level for a tagged trunk
+  in practice. Also opportunistically learns each host's MAC (from the
+  Ethernet header of its own traffic) and hostname (from DHCP option 12,
+  decoded off broadcast DISCOVER/REQUEST packets), so hosts can show up as
+  names instead of bare IPs.
 - `internal/store` — the only package touching `database/sql`. Two-tier
   storage: `flows_recent` (full 5-tuple, last 24h) plus `rollup_1m/5m/1h/1d`
   tables for zoomed-out, long-retention graphing.

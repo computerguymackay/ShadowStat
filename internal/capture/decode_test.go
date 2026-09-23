@@ -292,3 +292,57 @@ func TestDecodeLANToLANProducesBothPerspectives(t *testing.T) {
 		t.Errorf("target MAC = %q, want %q", target.LocalMAC, targetMAC.String())
 	}
 }
+
+func synthVLANTCPPacket(t *testing.T, vlanID uint16, srcMAC, dstMAC net.HardwareAddr, srcIP, dstIP net.IP, srcPort, dstPort uint16) []byte {
+	t.Helper()
+
+	eth := &layers.Ethernet{SrcMAC: srcMAC, DstMAC: dstMAC, EthernetType: layers.EthernetTypeDot1Q}
+	dot1q := &layers.Dot1Q{VLANIdentifier: vlanID, Type: layers.EthernetTypeIPv4}
+	ip := &layers.IPv4{Version: 4, IHL: 5, TTL: 64, Protocol: layers.IPProtocolTCP, SrcIP: srcIP, DstIP: dstIP}
+	tcp := &layers.TCP{SrcPort: layers.TCPPort(srcPort), DstPort: layers.TCPPort(dstPort), Seq: 1, SYN: true, Window: 1024}
+
+	buf := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: false}
+	if err := gopacket.SerializeLayers(buf, opts, eth, dot1q, ip, tcp); err != nil {
+		t.Fatalf("serialize VLAN test packet: %v", err)
+	}
+	out := make([]byte, len(buf.Bytes()))
+	copy(out, buf.Bytes())
+	return out
+}
+
+// TestDecodeHandlesVLANTaggedTraffic reproduces the real-world failure this
+// was built to fix: a mirrored trunk port carrying 802.1Q-tagged traffic
+// (multiple VLANs) produced zero flows, because the hand-built BPF filter's
+// fixed byte offsets assumed untagged frames, and the decoder never
+// registered a Dot1Q layer to unwrap the tag even if a packet got through.
+func TestDecodeHandlesVLANTaggedTraffic(t *testing.T) {
+	_, lan, err := net.ParseCIDR("192.168.0.0/16") // covers multiple VLAN subnets, as in the real report
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := NewDecoder(lan)
+
+	srcMAC, _ := net.ParseMAC("aa:bb:cc:dd:ee:01")
+	dstMAC, _ := net.ParseMAC("aa:bb:cc:dd:ee:02")
+	// VLAN 10 traffic, e.g. from a mirrored trunk uplink.
+	data := synthVLANTCPPacket(t, 10, srcMAC, dstMAC,
+		net.ParseIP("192.168.10.100"), net.ParseIP("93.184.216.34"), 54321, 443)
+
+	res := d.Decode(RawPacket{Data: data, Timestamp: time.Unix(1000, 0)})
+	if !res.HasFlow {
+		t.Fatal("expected a flow event for VLAN-tagged IPv4 traffic")
+	}
+	if res.Flow.Key.LocalIP != "192.168.10.100" {
+		t.Errorf("local ip = %s, want 192.168.10.100", res.Flow.Key.LocalIP)
+	}
+	if res.Flow.Key.RemoteIP != "93.184.216.34" {
+		t.Errorf("remote ip = %s, want 93.184.216.34", res.Flow.Key.RemoteIP)
+	}
+	if res.Flow.Key.Direction != store.DirLANToWAN {
+		t.Errorf("direction = %d, want %d (DirLANToWAN)", res.Flow.Key.Direction, store.DirLANToWAN)
+	}
+	if res.Flow.LocalMAC != srcMAC.String() {
+		t.Errorf("local MAC = %q, want %q", res.Flow.LocalMAC, srcMAC.String())
+	}
+}
