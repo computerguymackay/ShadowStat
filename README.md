@@ -48,21 +48,47 @@ standard on any systemd or OpenRC distro), but only if you use it.
 
 ## Installation (fresh machine)
 
+### Option A: download a pre-built binary
+
+Every [release](https://github.com/computerguymackay/ShadowStat/releases)
+publishes static binaries for `linux/amd64`, `linux/arm64` (64-bit Pi
+OS/most modern ARM boards), `linux/armv7` (32-bit Pi OS, Pi 2/3/4), and
+`linux/armv6` (Pi Zero/1). No Go toolchain needed on the target machine —
+useful on a Raspberry Pi, where building from source can be slow.
+
+```sh
+curl -LO https://github.com/computerguymackay/ShadowStat/releases/latest/download/shadowstat-linux-arm64.tar.gz
+tar xzf shadowstat-linux-arm64.tar.gz
+sudo mv shadowstat-linux-arm64 /usr/local/bin/shadowstat
+```
+
+(swap `arm64` for `armv7`/`armv6`/`amd64` to match your device — `uname -m`
+tells you which: `aarch64` → arm64, `armv7l` → armv7, `armv6l` → armv6,
+`x86_64` → amd64). `SHA256SUMS.txt` in the same release verifies the download.
+
+### Option B: build from source
+
 ```sh
 git clone git@github.com:computerguymackay/ShadowStat.git
 cd ShadowStat
 make build              # -> bin/shadowstat, a single static binary
+```
 
-./bin/shadowstat run    # interactive first-run setup (see below), Ctrl+C once it's serving
+### Either way, then
+
+```sh
+./bin/shadowstat run    # (or just `shadowstat run` if installed to PATH)
+                         # interactive first-run setup (see below), Ctrl+C once it's serving
 
 sudo ./bin/shadowstat install-service   # optional: run it as a proper system service
 ```
 
 That's the whole install — no package manager, no separate config step, no
-dependencies to install beyond Go itself to build it. The interactive `run`
-step is required at least once (it's what creates the database and prompts
-for capture interface/LAN subnet/retention/admin credentials); skipping
-straight to `install-service` on a machine that's never been set up will
+dependencies to install beyond Go itself if building from source. The
+interactive `run` step is required at least once (it's what creates the
+database and prompts for capture interface/LAN subnet/retention/admin
+credentials); skipping straight to `install-service` on a machine that's
+never been set up will
 refuse with a clear message telling you to do that first.
 
 ## Build
