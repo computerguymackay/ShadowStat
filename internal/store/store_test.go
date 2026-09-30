@@ -133,7 +133,7 @@ func TestUserAndSessionLifecycle(t *testing.T) {
 		t.Fatalf("expected no users yet, got exists=%v err=%v", exists, err)
 	}
 
-	id, err := db.CreateUser("admin", "hashed", 1000)
+	id, err := db.CreateUser("admin", "hashed", RoleAdmin, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestUserAndSessionLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if u.ID != id || u.PasswordHash != "hashed" {
+	if u.ID != id || u.PasswordHash != "hashed" || u.Role != RoleAdmin {
 		t.Fatalf("unexpected user: %+v", u)
 	}
 
@@ -306,5 +306,130 @@ func TestMigrationAddsMACColumn(t *testing.T) {
 
 	if err := db.SetHostMAC(hosts[0].ID, "aa:bb:cc:dd:ee:01"); err != nil {
 		t.Fatalf("SetHostMAC after migration: %v", err)
+	}
+}
+
+// TestMigrationDefaultsExistingUserToAdmin simulates a database created
+// before the users.role column existed (i.e. every ShadowStat install prior
+// to multi-user support) and checks the pre-existing account survives as an
+// admin — not demoted to standard, which would lock the original owner out
+// of settings/user management on upgrade.
+func TestMigrationDefaultsExistingUserToAdmin(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "shadowstat.db")
+
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = raw.Exec(`
+		CREATE TABLE schema_meta (version INTEGER NOT NULL);
+		INSERT INTO schema_meta (version) VALUES (1);
+		CREATE TABLE users (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			username TEXT NOT NULL UNIQUE,
+			password_hash TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			must_reauth_at INTEGER
+		);
+		INSERT INTO users (username, password_hash, created_at) VALUES ('admin', 'hashed', 1000);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() on pre-migration database failed: %v", err)
+	}
+	defer db.Close()
+
+	u, err := db.UserByUsername("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Role != RoleAdmin {
+		t.Errorf("role = %q, want %q (pre-existing account should default to admin)", u.Role, RoleAdmin)
+	}
+}
+
+func TestUserRoleManagement(t *testing.T) {
+	db := openTestDB(t)
+
+	adminID, err := db.CreateUser("admin", "hash1", RoleAdmin, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	standardID, err := db.CreateUser("viewer", "hash2", RoleStandard, 2000)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	users, err := db.ListUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 2 {
+		t.Fatalf("expected 2 users, got %d", len(users))
+	}
+	if users[0].Username != "admin" || users[1].Username != "viewer" {
+		t.Errorf("expected users ordered oldest-first, got %+v", users)
+	}
+
+	count, err := db.CountAdmins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("CountAdmins = %d, want 1", count)
+	}
+
+	if err := db.UpdateUserRole(standardID, RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	count, err = db.CountAdmins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Errorf("CountAdmins after promotion = %d, want 2", count)
+	}
+
+	if err := db.DeleteUser(adminID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.UserByID(adminID); err != ErrNotFound {
+		t.Errorf("expected ErrNotFound after delete, got %v", err)
+	}
+	users, err = db.ListUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 1 {
+		t.Fatalf("expected 1 user remaining, got %d", len(users))
+	}
+}
+
+func TestDetectorEnabledDefaultsAndOverride(t *testing.T) {
+	db := openTestDB(t)
+
+	if !db.DetectorEnabled(KeyDetectorPortScan) {
+		t.Error("expected detector to default to enabled when unset")
+	}
+
+	if err := db.SetSetting(KeyDetectorPortScan, "0"); err != nil {
+		t.Fatal(err)
+	}
+	if db.DetectorEnabled(KeyDetectorPortScan) {
+		t.Error("expected detector to be disabled after setting 0")
+	}
+
+	if err := db.SetSetting(KeyDetectorPortScan, "1"); err != nil {
+		t.Fatal(err)
+	}
+	if !db.DetectorEnabled(KeyDetectorPortScan) {
+		t.Error("expected detector to be enabled after setting 1")
 	}
 }

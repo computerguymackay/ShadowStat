@@ -7,12 +7,16 @@ persistent history that survives restarts.
 
 ## Status
 
-MVP core plus detection engine, device naming, and service install: live
-capture → aggregation → durable two-tier SQLite storage → authenticated,
-mobile-friendly HTTPS UI with per-host stats (shown by name when known,
-learned from DHCP), zoomable graphs, and an alerts view fed by five
-behavioral detectors (new destinations, beaconing, upload/download ratio,
-DNS volume/entropy, port scanning). See Roadmap below for what's next.
+MVP core plus detection engine, device naming, service install, and
+multi-user settings: live capture → aggregation → durable two-tier SQLite
+storage → authenticated, mobile-friendly HTTPS UI with per-host stats (shown
+by name when known, learned from DHCP), zoomable graphs, and an alerts view
+fed by five behavioral detectors (new destinations, beaconing,
+upload/download ratio, DNS volume/entropy, port scanning). A settings page
+lets an admin change capture/retention config, toggle individual detectors
+on/off, and manage additional user accounts — admins get full control,
+standard users get read-only dashboard access. See Roadmap below for what's
+next.
 
 ## Roadmap
 
@@ -109,10 +113,25 @@ make test        # go test ./...
 
 On first run (no database found), if stdin is a terminal you'll be walked
 through setup: choose a capture interface, enter your LAN subnet in CIDR
-form, pick a retention window, and set an admin username/password. A
-self-signed TLS certificate is generated automatically. Everything — capture
-interface, LAN subnet, retention window, admin credentials — is stored in the
-SQLite database; there are no config files or environment variables.
+form, pick a retention window, and set an admin username/password (this
+first account is always an admin — additional users, of either role, are
+added afterward from the Settings page). A self-signed TLS certificate is
+generated automatically. Everything — capture interface, LAN subnet,
+retention window, admin credentials — is stored in the SQLite database;
+there are no config files or environment variables.
+
+### Settings & user management
+
+Once logged in as an admin, `/settings` lets you change the capture
+interface/LAN subnet/retention window, toggle any of the five detectors on
+or off individually, and add/remove/reassign user accounts — all
+settings-mutating actions require re-entering your password first
+(prompted automatically), even within an already-logged-in session.
+Standard users can view the dashboard, host detail, and alerts pages but
+have no access to `/settings` or any mutating action (including
+acknowledging alerts). The system won't let you delete or demote your own
+account, or remove the last remaining admin — both would risk locking
+everyone out of settings with no way back in through the UI.
 
 On subsequent runs, setup is skipped and configuration is read straight from
 the database.
@@ -209,8 +228,12 @@ pipeline, rollup/retention design, and web API. Short version:
   `capture.DecodeResult.Flow2`).
 - `internal/web` — HTTPS-only (`net/http` + `crypto/tls`), session auth via
   argon2id-hashed credentials, JSON API driving a vendored uPlot frontend for
-  zoomable graphs from year view down to single-minute detail, plus an
-  alerts page/API with acknowledge.
+  zoomable graphs from year view down to single-minute detail, an alerts
+  page/API with acknowledge, and a settings page for capture/detector
+  config and user management — gated by two middleware layers
+  (`requireAdmin` for the admin role, `requireElevated`/
+  `requireAdminElevated` for a freshly re-authenticated session) on top of
+  the base `requireSession` check.
 - `internal/service` — systemd/OpenRC unit generation, system user creation,
   and dev-to-system data dir migration behind `install-service` /
   `uninstall-service` / `status`.

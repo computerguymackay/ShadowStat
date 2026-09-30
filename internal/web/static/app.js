@@ -463,9 +463,209 @@
     }
   }
 
+  // withElevation runs actionFn(); if the server says the session needs a
+  // fresh re-auth (settings-mutating endpoints require this), it prompts for
+  // the password via the shared modal, elevates the session, then retries
+  // actionFn() exactly once more. Any other error propagates normally.
+  async function withElevation(actionFn) {
+    try {
+      return await actionFn();
+    } catch (err) {
+      if (err.code !== "reauth_required") throw err;
+      await promptForReauth();
+      return actionFn();
+    }
+  }
+
+  function promptForReauth() {
+    return new Promise((resolve, reject) => {
+      const modal = document.getElementById("reauth-modal");
+      const form = document.getElementById("reauth-form");
+      const note = document.getElementById("reauth-note");
+      const cancelBtn = document.getElementById("reauth-cancel-btn");
+      note.textContent = "";
+      modal.hidden = false;
+      form.password.focus();
+
+      function cleanup() {
+        modal.hidden = true;
+        form.removeEventListener("submit", onSubmit);
+        cancelBtn.removeEventListener("click", onCancel);
+      }
+      function onCancel() {
+        cleanup();
+        reject(new Error("reauth cancelled"));
+      }
+      async function onSubmit(e) {
+        e.preventDefault();
+        try {
+          await api("/api/reauth", { method: "POST", body: JSON.stringify({ password: form.password.value }) });
+          form.reset();
+          cleanup();
+          resolve();
+        } catch (err) {
+          note.textContent = "Incorrect password.";
+        }
+      }
+      form.addEventListener("submit", onSubmit);
+      cancelBtn.addEventListener("click", onCancel);
+    });
+  }
+
+  async function initSettings() {
+    wireLogoutButton();
+
+    const ifaceSelect = document.getElementById("capture-interface-select");
+    const subnetInput = document.getElementById("lan-subnet-input");
+    const retentionSelect = document.getElementById("retention-select");
+    const generalNote = document.getElementById("general-settings-note");
+    const detectorNote = document.getElementById("detector-settings-note");
+    const detectorForm = document.getElementById("detector-settings-form");
+    const generalForm = document.getElementById("general-settings-form");
+
+    async function loadGeneralSettings() {
+      const [ifaceData, settings] = await Promise.all([api("/api/interfaces"), api("/api/settings")]);
+
+      ifaceSelect.innerHTML = "";
+      for (const name of ifaceData.interfaces || []) {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        ifaceSelect.appendChild(opt);
+      }
+      if (settings.capture_interface) ifaceSelect.value = settings.capture_interface;
+      if (settings.lan_subnet_cidr) subnetInput.value = settings.lan_subnet_cidr;
+      if (settings.retention_days) retentionSelect.value = settings.retention_days;
+
+      for (const cb of detectorForm.querySelectorAll('input[type="checkbox"]')) {
+        cb.checked = settings[cb.name] !== "0"; // missing key defaults to enabled
+      }
+    }
+
+    generalForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      generalNote.textContent = "";
+      try {
+        const data = await withElevation(() =>
+          api("/api/settings", {
+            method: "PUT",
+            body: JSON.stringify({
+              capture_interface: ifaceSelect.value,
+              lan_subnet_cidr: subnetInput.value,
+              retention_days: retentionSelect.value,
+            }),
+          })
+        );
+        generalNote.textContent = data.restart_required
+          ? "Saved. Restart shadowstat for the capture interface/subnet change to take effect."
+          : "Saved.";
+      } catch (err) {
+        generalNote.textContent = "Could not save: " + (err.code || err.message);
+      }
+    });
+
+    detectorForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      detectorNote.textContent = "";
+      const payload = {};
+      for (const cb of detectorForm.querySelectorAll('input[type="checkbox"]')) {
+        payload[cb.name] = cb.checked ? "1" : "0";
+      }
+      try {
+        await withElevation(() => api("/api/settings", { method: "PUT", body: JSON.stringify(payload) }));
+        detectorNote.textContent = "Saved.";
+      } catch (err) {
+        detectorNote.textContent = "Could not save: " + (err.code || err.message);
+      }
+    });
+
+    const userTableBody = document.getElementById("user-table-body");
+    const addUserForm = document.getElementById("add-user-form");
+    const addUserNote = document.getElementById("add-user-note");
+
+    async function loadUsers() {
+      const data = await api("/api/users");
+      userTableBody.innerHTML = "";
+      for (const u of data.users || []) {
+        const tr = document.createElement("tr");
+        tr.appendChild(td("Username", u.username));
+
+        const roleTd = td("Role", "");
+        const roleSelect = document.createElement("select");
+        for (const r of ["standard", "admin"]) {
+          const opt = document.createElement("option");
+          opt.value = r;
+          opt.textContent = r === "admin" ? "Admin" : "Standard";
+          if (r === u.role) opt.selected = true;
+          roleSelect.appendChild(opt);
+        }
+        roleSelect.addEventListener("change", async () => {
+          try {
+            await withElevation(() =>
+              api(`/api/users/${u.id}/role`, { method: "PUT", body: JSON.stringify({ role: roleSelect.value }) })
+            );
+            await loadUsers();
+          } catch (err) {
+            alert("Could not change role: " + (err.code || err.message));
+            roleSelect.value = u.role;
+          }
+        });
+        roleTd.appendChild(roleSelect);
+        tr.appendChild(roleTd);
+
+        tr.appendChild(td("Created", fmtTime(u.created_at)));
+
+        const actionsTd = td("", "");
+        const delBtn = document.createElement("button");
+        delBtn.type = "button";
+        delBtn.className = "alert-ack-btn";
+        delBtn.textContent = "Delete";
+        delBtn.addEventListener("click", async () => {
+          if (!confirm(`Delete user "${u.username}"?`)) return;
+          try {
+            await withElevation(() => api(`/api/users/${u.id}`, { method: "DELETE" }));
+            await loadUsers();
+          } catch (err) {
+            alert("Could not delete user: " + (err.code || err.message));
+          }
+        });
+        actionsTd.appendChild(delBtn);
+        tr.appendChild(actionsTd);
+
+        userTableBody.appendChild(tr);
+      }
+    }
+
+    addUserForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      addUserNote.textContent = "";
+      const fd = new FormData(addUserForm);
+      try {
+        await withElevation(() =>
+          api("/api/users", {
+            method: "POST",
+            body: JSON.stringify({ username: fd.get("username"), password: fd.get("password"), role: fd.get("role") }),
+          })
+        );
+        addUserForm.reset();
+        addUserNote.textContent = "User added.";
+        await loadUsers();
+      } catch (err) {
+        addUserNote.textContent = "Could not add user: " + (err.code || err.message);
+      }
+    });
+
+    try {
+      await loadGeneralSettings();
+      await loadUsers();
+    } catch (err) {
+      if (err.status === 401) window.location.href = "/login";
+    }
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
     wireLoginForm();
   });
 
-  window.ShadowStat = { initDashboard, initHostDetail, initAlerts };
+  window.ShadowStat = { initDashboard, initHostDetail, initAlerts, initSettings };
 })();

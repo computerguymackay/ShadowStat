@@ -44,15 +44,25 @@ func (s *Scheduler) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-tickNewDest.C:
-			NewDestinations(s.db, time.Now())
+			if s.db.DetectorEnabled(store.KeyDetectorNewDestination) {
+				NewDestinations(s.db, time.Now())
+			}
 		case <-tickPortScan.C:
-			PortScan(s.db, time.Now())
+			if s.db.DetectorEnabled(store.KeyDetectorPortScan) {
+				PortScan(s.db, time.Now())
+			}
 		case <-tickDNS.C:
-			DNSAnomaly(s.db, time.Now())
+			if s.db.DetectorEnabled(store.KeyDetectorDNSAnomaly) {
+				DNSAnomaly(s.db, time.Now())
+			}
 		case <-tickExfil.C:
-			ExfilRatio(s.db, time.Now())
+			if s.db.DetectorEnabled(store.KeyDetectorExfilRatio) {
+				ExfilRatio(s.db, time.Now())
+			}
 		case <-tickBeacon.C:
-			Beaconing(s.db, time.Now())
+			if s.db.DetectorEnabled(store.KeyDetectorBeaconing) {
+				Beaconing(s.db, time.Now())
+			}
 		case <-tickPrune.C:
 			if err := s.db.PruneDNSQueries(time.Now().Add(-dnsQueriesRetention).Unix()); err != nil {
 				log.Printf("detect: prune dns_queries: %v", err)

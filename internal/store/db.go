@@ -95,6 +95,13 @@ func (db *DB) migrate() error {
 	if err := db.ensureColumn("hosts", "mac_address", "TEXT"); err != nil {
 		return fmt.Errorf("migrate hosts.mac_address: %w", err)
 	}
+	// Existing single-user databases: the column default makes every
+	// pre-existing account 'admin', which is exactly correct — it preserves
+	// the only account that previously existed with the only role it could
+	// have had (the first-run wizard has never created anything else).
+	if err := db.ensureColumn("users", "role", "TEXT NOT NULL DEFAULT 'admin'"); err != nil {
+		return fmt.Errorf("migrate users.role: %w", err)
+	}
 
 	var count int
 	if err := db.Writer.QueryRow("SELECT COUNT(*) FROM schema_meta").Scan(&count); err != nil {

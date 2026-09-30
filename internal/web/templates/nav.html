@@ -7,6 +7,7 @@
       <a href="/alerts" class="nav-link{{if .OnAlertsPage}} active{{end}}">
         Alerts{{if .UnackedAlerts}}<span class="badge">{{.UnackedAlerts}}</span>{{end}}
       </a>
+      {{if .IsAdmin}}<a href="/settings" class="nav-link{{if .OnSettingsPage}} active{{end}}">Settings</a>{{end}}
     </nav>
     {{if .Breadcrumb}}<span class="crumb-sep" aria-hidden="true">/</span><span class="crumb">{{.Breadcrumb}}</span>{{end}}
   </div>

@@ -21,14 +21,17 @@ type pageVars struct {
 	HostMAC         string
 	UnackedAlerts   int
 	OnAlertsPage    bool
+	OnSettingsPage  bool
+	IsAdmin         bool
 }
 
-func (h *pageHandlers) navVars() pageVars {
+func (h *pageHandlers) navVars(r *http.Request) pageVars {
 	count, err := h.db.CountUnacknowledgedAlerts()
 	if err != nil {
 		log.Printf("web: count unacknowledged alerts: %v", err)
 	}
-	return pageVars{UnackedAlerts: count}
+	sess := sessionFromContext(r.Context())
+	return pageVars{UnackedAlerts: count, IsAdmin: sess != nil && sess.IsAdmin()}
 }
 
 func (h *pageHandlers) login(w http.ResponseWriter, r *http.Request) {
@@ -36,12 +39,12 @@ func (h *pageHandlers) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *pageHandlers) dashboard(w http.ResponseWriter, r *http.Request) {
-	v := h.navVars()
+	v := h.navVars(r)
 	renderTemplate(w, "dashboard.html", &v)
 }
 
 func (h *pageHandlers) hostDetail(w http.ResponseWriter, r *http.Request) {
-	hostID, ok := parseHostID(r)
+	hostID, ok := parseIDParam(r)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -56,7 +59,7 @@ func (h *pageHandlers) hostDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	v := h.navVars()
+	v := h.navVars(r)
 	v.HostID = host.ID
 	v.HostIP = host.IP
 	v.HostDisplayName = host.DisplayName.String
@@ -70,10 +73,17 @@ func (h *pageHandlers) hostDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *pageHandlers) alerts(w http.ResponseWriter, r *http.Request) {
-	v := h.navVars()
+	v := h.navVars(r)
 	v.Breadcrumb = "Alerts"
 	v.OnAlertsPage = true
 	renderTemplate(w, "alerts.html", &v)
+}
+
+func (h *pageHandlers) settings(w http.ResponseWriter, r *http.Request) {
+	v := h.navVars(r)
+	v.Breadcrumb = "Settings"
+	v.OnSettingsPage = true
+	renderTemplate(w, "settings.html", &v)
 }
 
 func renderTemplate(w http.ResponseWriter, name string, data any) {

@@ -78,7 +78,7 @@ func RunFirstRunWizard(db *store.DB) error {
 		return fmt.Errorf("hash password: %w", err)
 	}
 
-	if _, err := db.CreateUser(username, hash, time.Now().Unix()); err != nil {
+	if _, err := db.CreateUser(username, hash, store.RoleAdmin, time.Now().Unix()); err != nil {
 		return fmt.Errorf("create admin user: %w", err)
 	}
 

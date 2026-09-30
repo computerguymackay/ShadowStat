@@ -52,7 +52,7 @@ func (h *apiHandlers) listAlerts(w http.ResponseWriter, r *http.Request) {
 
 // hostAlerts returns the most recent alerts for a single host.
 func (h *apiHandlers) hostAlerts(w http.ResponseWriter, r *http.Request) {
-	hostID, ok := parseHostID(r)
+	hostID, ok := parseIDParam(r)
 	if !ok {
 		writeJSONError(w, http.StatusBadRequest, "invalid_host_id")
 		return
@@ -67,8 +67,8 @@ func (h *apiHandlers) hostAlerts(w http.ResponseWriter, r *http.Request) {
 
 // ackAlert marks an alert as acknowledged.
 func (h *apiHandlers) ackAlert(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || id <= 0 {
+	id, ok := parseIDParam(r)
+	if !ok {
 		writeJSONError(w, http.StatusBadRequest, "invalid_alert_id")
 		return
 	}

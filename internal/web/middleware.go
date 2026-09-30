@@ -54,6 +54,42 @@ func requireElevated(sessions *auth.Manager, next http.HandlerFunc) http.Handler
 	})
 }
 
+// requireAdmin additionally rejects requests from a non-admin (standard)
+// user — standard users can view dashboards but not mutate anything or see
+// settings/user management.
+func requireAdmin(sessions *auth.Manager, isAPI bool, next http.HandlerFunc) http.HandlerFunc {
+	return requireSession(sessions, isAPI, func(w http.ResponseWriter, r *http.Request) {
+		sess := sessionFromContext(r.Context())
+		if !sess.IsAdmin() {
+			denyForbidden(w, r, isAPI)
+			return
+		}
+		next(w, r)
+	})
+}
+
+func denyForbidden(w http.ResponseWriter, r *http.Request, isAPI bool) {
+	if isAPI {
+		writeJSONError(w, http.StatusForbidden, "admin_required")
+		return
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// requireAdminElevated combines both gates: admin role AND a freshly
+// re-authenticated session. Used for the truly sensitive mutations (settings
+// changes, user creation/deletion/role changes).
+func requireAdminElevated(sessions *auth.Manager, next http.HandlerFunc) http.HandlerFunc {
+	return requireAdmin(sessions, true, func(w http.ResponseWriter, r *http.Request) {
+		sess := sessionFromContext(r.Context())
+		if !auth.IsElevated(sess) {
+			writeJSONError(w, http.StatusForbidden, "reauth_required")
+			return
+		}
+		next(w, r)
+	})
+}
+
 func sessionFromContext(ctx context.Context) *store.Session {
 	sess, _ := ctx.Value(sessionCtxKey).(*store.Session)
 	return sess

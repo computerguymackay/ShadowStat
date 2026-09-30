@@ -2,14 +2,20 @@ package store
 
 import "database/sql"
 
-// Session is a web login session.
+// Session is a web login session. Role is joined fresh from users on every
+// lookup (not cached at login time), so a role change takes effect on a
+// user's very next request rather than only their next login.
 type Session struct {
 	Token         string
 	UserID        int64
+	Role          string
 	CreatedAt     int64
 	ExpiresAt     int64
 	ElevatedUntil sql.NullInt64
 }
+
+// IsAdmin reports whether the session's user has the admin role.
+func (s *Session) IsAdmin() bool { return s.Role == RoleAdmin }
 
 // CreateSession inserts a new session row.
 func (db *DB) CreateSession(token string, userID, createdAt, expiresAt int64) error {
@@ -20,13 +26,16 @@ func (db *DB) CreateSession(token string, userID, createdAt, expiresAt int64) er
 	return err
 }
 
-// SessionByToken looks up a session by its token.
+// SessionByToken looks up a session by its token, joined with the user's
+// current role.
 func (db *DB) SessionByToken(token string) (*Session, error) {
 	var s Session
 	err := db.Reader.QueryRow(
-		"SELECT token, user_id, created_at, expires_at, elevated_until FROM sessions WHERE token = ?",
+		`SELECT s.token, s.user_id, u.role, s.created_at, s.expires_at, s.elevated_until
+		 FROM sessions s JOIN users u ON u.id = s.user_id
+		 WHERE s.token = ?`,
 		token,
-	).Scan(&s.Token, &s.UserID, &s.CreatedAt, &s.ExpiresAt, &s.ElevatedUntil)
+	).Scan(&s.Token, &s.UserID, &s.Role, &s.CreatedAt, &s.ExpiresAt, &s.ElevatedUntil)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}

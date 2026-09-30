@@ -389,6 +389,93 @@ button:active { opacity: 0.85; }
 
 .error { color: #ff6b6b; font-size: 0.85rem; margin: 0; }
 
+/* --- settings page ------------------------------------------------------- */
+
+main > section {
+  margin-bottom: 2.5rem;
+  padding-bottom: 2rem;
+  border-bottom: 1px solid var(--border);
+}
+main > section:last-of-type { border-bottom: none; }
+
+.subsection-title { font-size: 0.9rem; margin: 1.5rem 0 0.75rem; color: var(--muted); }
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  max-width: 420px;
+}
+.settings-form label { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.9rem; }
+.settings-form input[type="text"],
+.settings-form input[type="password"],
+.settings-form select {
+  padding: 0.6rem 0.7rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  font-size: 16px; /* prevents iOS Safari auto-zoom on focus */
+}
+.settings-form .checkbox-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+}
+.settings-form .checkbox-row input { width: 18px; height: 18px; }
+.settings-form button { align-self: flex-start; }
+
+.form-note { font-size: 0.85rem; color: var(--muted); margin: 0; min-height: 1.2em; }
+
+#user-table select {
+  padding: 0.35rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+}
+
+/* --- re-auth modal --------------------------------------------------------- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  z-index: 100;
+}
+
+.modal-box {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  width: min(360px, 100%);
+  padding: 1.75rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-raised);
+}
+.modal-box h2 { margin: 0; font-size: 1.1rem; }
+.modal-box label { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.9rem; }
+.modal-box input {
+  padding: 0.6rem 0.7rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  font-size: 16px;
+}
+.modal-actions { display: flex; justify-content: flex-end; gap: 0.6rem; }
+
+.secondary-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg);
+}
+
 /* --- misc responsive tweaks --------------------------------------------- */
 
 @media (max-width: 480px) {

@@ -156,7 +156,7 @@ const (
 )
 
 func (h *apiHandlers) hostSeries(w http.ResponseWriter, r *http.Request) {
-	hostID, ok := parseHostID(r)
+	hostID, ok := parseIDParam(r)
 	if !ok {
 		writeJSONError(w, http.StatusBadRequest, "invalid_host_id")
 		return
@@ -218,7 +218,7 @@ func (h *apiHandlers) hostSeries(w http.ResponseWriter, r *http.Request) {
 // --- flows detail -----------------------------------------------------------
 
 func (h *apiHandlers) hostFlows(w http.ResponseWriter, r *http.Request) {
-	hostID, ok := parseHostID(r)
+	hostID, ok := parseIDParam(r)
 	if !ok {
 		writeJSONError(w, http.StatusBadRequest, "invalid_host_id")
 		return
@@ -284,7 +284,7 @@ func (h *apiHandlers) putSettings(w http.ResponseWriter, r *http.Request) {
 
 // --- shared helpers -----------------------------------------------------
 
-func parseHostID(r *http.Request) (int64, bool) {
+func parseIDParam(r *http.Request) (int64, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
 		return 0, false
