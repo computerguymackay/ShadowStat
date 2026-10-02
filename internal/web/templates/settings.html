@@ -42,6 +42,11 @@
         <label class="checkbox-row"><input type="checkbox" name="detector_exfil_ratio_enabled" checked> Upload/download ratio</label>
         <label class="checkbox-row"><input type="checkbox" name="detector_dns_anomaly_enabled" checked> DNS anomaly</label>
         <label class="checkbox-row"><input type="checkbox" name="detector_port_scan_enabled" checked> Port scan</label>
+        <label class="checkbox-row"><input type="checkbox" name="detector_geo_watchlist_enabled" checked> Country watchlist</label>
+        <label>Watchlisted countries (ISO codes, comma-separated)
+          <input type="text" name="geo_watchlist_countries" id="geo-watchlist-input" placeholder="e.g. CN,RU,KP,IR">
+        </label>
+        <p class="form-note">Alerts when a host exchanges traffic with an address allocated to one of these countries. Leave blank to disable — there's no default list.</p>
         <p id="detector-settings-note" class="form-note"></p>
         <button type="submit">Save detector settings</button>
       </form>

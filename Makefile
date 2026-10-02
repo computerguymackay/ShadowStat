@@ -28,3 +28,10 @@ setcap: build
 .PHONY: clean
 clean:
 	rm -rf bin
+
+# Regenerates the embedded IPv4-to-country table from the RIRs' public
+# delegated-extended statistics. Requires network access; not part of the
+# normal build since IP allocations change slowly.
+.PHONY: geoip-data
+geoip-data:
+	go run ./tools/geoip-gen

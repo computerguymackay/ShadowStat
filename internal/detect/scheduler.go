@@ -31,12 +31,14 @@ func (s *Scheduler) Run(ctx context.Context) {
 	tickDNS := time.NewTicker(DNSWindow)
 	tickExfil := time.NewTicker(ExfilWindow / 6) // check several times per window
 	tickBeacon := time.NewTicker(15 * time.Minute)
+	tickGeo := time.NewTicker(GeoWatchlistScanWindow)
 	tickPrune := time.NewTicker(time.Hour)
 	defer tickNewDest.Stop()
 	defer tickPortScan.Stop()
 	defer tickDNS.Stop()
 	defer tickExfil.Stop()
 	defer tickBeacon.Stop()
+	defer tickGeo.Stop()
 	defer tickPrune.Stop()
 
 	for {
@@ -62,6 +64,10 @@ func (s *Scheduler) Run(ctx context.Context) {
 		case <-tickBeacon.C:
 			if s.db.DetectorEnabled(store.KeyDetectorBeaconing) {
 				Beaconing(s.db, time.Now())
+			}
+		case <-tickGeo.C:
+			if s.db.DetectorEnabled(store.KeyDetectorGeoWatchlist) {
+				GeoWatchlist(s.db, time.Now())
 			}
 		case <-tickPrune.C:
 			if err := s.db.PruneDNSQueries(time.Now().Add(-dnsQueriesRetention).Unix()); err != nil {

@@ -103,6 +103,7 @@
     exfil_ratio: "Upload/download ratio",
     dns_anomaly: "DNS anomaly",
     port_scan: "Port scan",
+    geo_watchlist: "Country watchlist",
   };
 
   // detailRow appends a "label: value" row to a detail <dl>.
@@ -178,6 +179,12 @@
           detailRow(dl, "Query count", String(d.query_count));
           detailRow(dl, "Window", `${d.window_seconds}s`);
         }
+        break;
+      }
+      case "geo_watchlist": {
+        detailRow(dl, "Peer", d.remote_ip);
+        detailRow(dl, "Country", d.country);
+        detailRow(dl, "Why it's flagged", "Address is allocated to a country on the watchlist");
         break;
       }
       default: {
@@ -546,6 +553,7 @@
     const detectorNote = document.getElementById("detector-settings-note");
     const detectorForm = document.getElementById("detector-settings-form");
     const generalForm = document.getElementById("general-settings-form");
+    const geoWatchlistInput = document.getElementById("geo-watchlist-input");
 
     async function loadGeneralSettings() {
       const [ifaceData, settings] = await Promise.all([api("/api/interfaces"), api("/api/settings")]);
@@ -564,6 +572,7 @@
       for (const cb of detectorForm.querySelectorAll('input[type="checkbox"]')) {
         cb.checked = settings[cb.name] !== "0"; // missing key defaults to enabled
       }
+      geoWatchlistInput.value = settings.geo_watchlist_countries || "";
     }
 
     generalForm.addEventListener("submit", async (e) => {
@@ -595,6 +604,7 @@
       for (const cb of detectorForm.querySelectorAll('input[type="checkbox"]')) {
         payload[cb.name] = cb.checked ? "1" : "0";
       }
+      payload.geo_watchlist_countries = geoWatchlistInput.value;
       try {
         await withElevation(() => api("/api/settings", { method: "PUT", body: JSON.stringify(payload) }));
         detectorNote.textContent = "Saved.";

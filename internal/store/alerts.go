@@ -7,6 +7,7 @@ const (
 	AlertKindExfilRatio     = "exfil_ratio"
 	AlertKindDNSAnomaly     = "dns_anomaly"
 	AlertKindPortScan       = "port_scan"
+	AlertKindGeoWatchlist   = "geo_watchlist"
 )
 
 // Alert severities.

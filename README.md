@@ -11,12 +11,14 @@ MVP core plus detection engine, device naming, service install, and
 multi-user settings: live capture → aggregation → durable two-tier SQLite
 storage → authenticated, mobile-friendly HTTPS UI with per-host stats (shown
 by name when known, learned from DHCP), zoomable graphs, and an alerts view
-fed by five behavioral detectors (new destinations, beaconing,
-upload/download ratio, DNS volume/entropy, port scanning). A settings page
-lets an admin change capture/retention config, toggle individual detectors
-on/off, and manage additional user accounts — admins get full control,
-standard users get read-only dashboard access. See Roadmap below for what's
-next.
+fed by six behavioral detectors (new destinations, beaconing,
+upload/download ratio, DNS volume/entropy, port scanning, and a
+country-of-origin watchlist backed by an embedded, freely redistributable
+IANA/RIR IP-allocation dataset — no third-party GeoIP account or license
+key). A settings page lets an admin change capture/retention config, toggle
+individual detectors on/off, manage the watchlisted countries, and manage
+additional user accounts — admins get full control, standard users get
+read-only dashboard access. See Roadmap below for what's next.
 
 ## Roadmap
 
@@ -213,7 +215,7 @@ pipeline, rollup/retention design, and web API. Short version:
   tables for zoomed-out, long-retention graphing.
 - `internal/rollupjob` — rolls `flows_recent` up into the rollup tables and
   prunes old data on independent tickers per granularity.
-- `internal/detect` — five periodic detectors reading the same
+- `internal/detect` — six periodic detectors reading the same
   `flows_recent`/`dns_queries` data, writing deduplicated `alerts` rows:
   **new destinations** (a peer/port not contacted by a host in 30 days —
   labeled outbound/inbound/bidirectional depending on who actually initiated
@@ -225,7 +227,15 @@ pipeline, rollup/retention design, and web API. Short version:
   checked in both directions: this host scanning out, *and* another LAN
   device scanning this host, which needed LAN-to-LAN traffic to be recorded
   from both hosts' perspectives, not just the packet's source — see
-  `capture.DecodeResult.Flow2`).
+  `capture.DecodeResult.Flow2`), and **country watchlist** (a host
+  exchanging traffic with an address allocated to an admin-configured list
+  of ISO country codes — empty by default, since there's no sane
+  site-independent default). Country lookups go through `internal/geoip`, a
+  self-contained IPv4→country table built by `tools/geoip-gen` (run via
+  `make geoip-data`) from the five RIRs' public "delegated-extended"
+  allocation statistics and embedded in the binary via `go:embed` — chosen
+  over MaxMind's GeoLite2 specifically to avoid any account/license-key
+  requirement or redistribution restriction.
 - `internal/web` — HTTPS-only (`net/http` + `crypto/tls`), session auth via
   argon2id-hashed credentials, JSON API driving a vendored uPlot frontend for
   zoomable graphs from year view down to single-minute detail, an alerts

@@ -379,6 +379,108 @@ func TestDNSAnomalyFlagsVolumeAndEntropy(t *testing.T) {
 	}
 }
 
+func TestGeoWatchlistFlagsMatchingCountry(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now()
+
+	hostID, err := db.UpsertHost("192.168.1.50", now.Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetSetting(store.KeyGeoWatchlistCountries, "CN,RU"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 61.135.169.1 is a long-standing China Telecom allocation (CN).
+	insertFlow(t, db, hostID, "61.135.169.1", 443, now.Unix())
+
+	GeoWatchlist(db, now)
+
+	alerts, err := db.ListAlertsForHost(hostID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(alerts) != 1 || alerts[0].Kind != store.AlertKindGeoWatchlist {
+		t.Fatalf("expected 1 geo_watchlist alert, got %+v", alerts)
+	}
+	if !strings.Contains(alerts[0].Detail, `"country":"CN"`) {
+		t.Errorf("expected detail to name the matched country, got %q", alerts[0].Detail)
+	}
+
+	// Re-running immediately against the same ongoing connection shouldn't duplicate.
+	insertFlow(t, db, hostID, "61.135.169.1", 443, now.Unix())
+	GeoWatchlist(db, now)
+	alerts, err = db.ListAlertsForHost(hostID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(alerts) != 1 {
+		t.Fatalf("expected still 1 alert after re-run, got %d", len(alerts))
+	}
+}
+
+func TestGeoWatchlistIgnoresNonWatchlistedCountry(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now()
+
+	hostID, err := db.UpsertHost("192.168.1.50", now.Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetSetting(store.KeyGeoWatchlistCountries, "CN,RU"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 212.58.224.1 is a BBC allocation (GB) — not on the watchlist.
+	insertFlow(t, db, hostID, "212.58.224.1", 443, now.Unix())
+
+	GeoWatchlist(db, now)
+
+	alerts, err := db.ListAlertsForHost(hostID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(alerts) != 0 {
+		t.Fatalf("expected no alert for a non-watchlisted country, got %+v", alerts)
+	}
+}
+
+func TestGeoWatchlistDoesNothingWhenUnconfigured(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now()
+
+	hostID, err := db.UpsertHost("192.168.1.50", now.Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No watchlist setting at all — must not raise, not even for an
+	// otherwise-matching address.
+	insertFlow(t, db, hostID, "61.135.169.1", 443, now.Unix())
+
+	GeoWatchlist(db, now)
+
+	alerts, err := db.ListAlertsForHost(hostID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(alerts) != 0 {
+		t.Fatalf("expected no alerts with an unconfigured watchlist, got %+v", alerts)
+	}
+}
+
+func TestParseGeoWatchlist(t *testing.T) {
+	got := ParseGeoWatchlist(" cn, ru ,kp\nIR ")
+	want := map[string]bool{"CN": true, "RU": true, "KP": true, "IR": true}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for cc := range want {
+		if !got[cc] {
+			t.Errorf("missing %q in parsed set %v", cc, got)
+		}
+	}
+}
+
 func TestShannonEntropy(t *testing.T) {
 	if e := shannonEntropy("aaaaaaaa"); e != 0 {
 		t.Errorf("entropy of repeated char = %v, want 0", e)

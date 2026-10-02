@@ -21,6 +21,15 @@ const (
 	KeyDetectorExfilRatio     = "detector_exfil_ratio_enabled"
 	KeyDetectorDNSAnomaly     = "detector_dns_anomaly_enabled"
 	KeyDetectorPortScan       = "detector_port_scan_enabled"
+	KeyDetectorGeoWatchlist   = "detector_geo_watchlist_enabled"
+
+	// KeyGeoWatchlistCountries holds the admin-configured, comma-separated
+	// list of ISO 3166-1 alpha-2 country codes (e.g. "CN,RU,KP,IR") to alert
+	// on. Deliberately has no default value — unlike the other detectors,
+	// there's no sane site-independent list of "unexpected" countries, so an
+	// unset/empty value means the detector has nothing to check and stays
+	// silent rather than guessing on the admin's behalf.
+	KeyGeoWatchlistCountries = "geo_watchlist_countries"
 )
 
 // GetSetting returns the value for key, or ("", false) if unset.
