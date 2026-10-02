@@ -84,16 +84,24 @@ func scanAlerts(rows interface {
 	return out, rows.Err()
 }
 
-// ListAlerts returns the most recent alerts across all hosts, most recent first.
-// If unackedOnly is true, acknowledged alerts are excluded.
-func (db *DB) ListAlerts(limit int, unackedOnly bool) ([]Alert, error) {
-	query := `SELECT ` + alertListColumns + ` FROM alerts a JOIN hosts h ON h.id = a.host_id`
+// ListAlerts returns the most recent alerts across all hosts, most recent
+// first. If unackedOnly is true, acknowledged alerts are excluded. If kind is
+// non-empty, only alerts of that kind are returned — used to let an admin
+// filter down to (and bulk-acknowledge) one noisy detector's alerts.
+func (db *DB) ListAlerts(limit int, unackedOnly bool, kind string) ([]Alert, error) {
+	query := `SELECT ` + alertListColumns + ` FROM alerts a JOIN hosts h ON h.id = a.host_id WHERE 1=1`
+	args := []any{}
 	if unackedOnly {
-		query += ` WHERE a.acknowledged = 0`
+		query += ` AND a.acknowledged = 0`
+	}
+	if kind != "" {
+		query += ` AND a.kind = ?`
+		args = append(args, kind)
 	}
 	query += ` ORDER BY a.detected_at DESC LIMIT ?`
+	args = append(args, limit)
 
-	rows, err := db.Reader.Query(query, limit)
+	rows, err := db.Reader.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -119,6 +127,25 @@ func (db *DB) ListAlertsForHost(hostID int64, limit int) ([]Alert, error) {
 func (db *DB) AcknowledgeAlert(id int64) error {
 	_, err := db.Writer.Exec("UPDATE alerts SET acknowledged = 1 WHERE id = ?", id)
 	return err
+}
+
+// AcknowledgeAllAlerts marks every currently-unacknowledged alert as
+// acknowledged, optionally restricted to a single kind (empty = all kinds).
+// Lets an admin clear a flood of alerts (e.g. thousands of new_destination
+// alerts from a still-learning install) in one action instead of one at a
+// time. Returns how many rows were affected.
+func (db *DB) AcknowledgeAllAlerts(kind string) (int64, error) {
+	query := "UPDATE alerts SET acknowledged = 1 WHERE acknowledged = 0"
+	var args []any
+	if kind != "" {
+		query += " AND kind = ?"
+		args = append(args, kind)
+	}
+	res, err := db.Writer.Exec(query, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // CountUnacknowledgedAlerts returns how many alerts are still unacknowledged,

@@ -12,7 +12,14 @@
   <main>
     <div class="page-header">
       <h1 class="page-title">Alerts</h1>
+      <label>Kind
+        <select id="kind-filter">
+          <option value="">All kinds</option>
+        </select>
+      </label>
       <label class="toggle"><input type="checkbox" id="unacked-toggle" checked> Unacknowledged only</label>
+      <button type="button" id="ack-all-btn" class="secondary-btn">Acknowledge all shown</button>
+      <p id="ack-all-note" class="form-note"></p>
     </div>
     <ul id="alert-list" class="alert-list"></ul>
     <p id="alert-list-empty" class="empty-state" hidden>No alerts to show.</p>

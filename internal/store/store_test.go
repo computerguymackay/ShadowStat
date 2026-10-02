@@ -433,3 +433,68 @@ func TestDetectorEnabledDefaultsAndOverride(t *testing.T) {
 		t.Error("expected detector to be enabled after setting 1")
 	}
 }
+
+func TestAcknowledgeAllAlerts(t *testing.T) {
+	db := openTestDB(t)
+
+	hostID, err := db.UpsertHost("192.168.1.50", 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		if err := db.InsertAlert(AlertRecord{
+			HostID: hostID, Kind: AlertKindNewDestination, Severity: SeverityInfo,
+			Summary: "test", DedupeKey: string(rune('a' + i)), DetectedAt: 1000,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.InsertAlert(AlertRecord{
+		HostID: hostID, Kind: AlertKindPortScan, Severity: SeverityCritical,
+		Summary: "test", DedupeKey: "scan", DetectedAt: 1000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Acknowledging one kind only clears that kind.
+	n, err := db.AcknowledgeAllAlerts(AlertKindNewDestination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 5 {
+		t.Fatalf("acknowledged %d alerts, want 5", n)
+	}
+
+	unacked, err := db.ListAlerts(100, true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unacked) != 1 || unacked[0].Kind != AlertKindPortScan {
+		t.Fatalf("expected only the port_scan alert left unacknowledged, got %+v", unacked)
+	}
+
+	// kind filter on ListAlerts narrows results regardless of ack state.
+	filtered, err := db.ListAlerts(100, false, AlertKindNewDestination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filtered) != 5 {
+		t.Fatalf("expected 5 new_destination alerts, got %d", len(filtered))
+	}
+
+	// Acknowledging all (no kind filter) clears the rest.
+	n, err = db.AcknowledgeAllAlerts("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("acknowledged %d alerts, want 1", n)
+	}
+	unacked, err = db.ListAlerts(100, true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unacked) != 0 {
+		t.Fatalf("expected no unacknowledged alerts left, got %+v", unacked)
+	}
+}

@@ -292,11 +292,27 @@
     const listEl = document.getElementById("alert-list");
     const emptyEl = document.getElementById("alert-list-empty");
     const toggle = document.getElementById("unacked-toggle");
+    const kindFilter = document.getElementById("kind-filter");
+    const ackAllBtn = document.getElementById("ack-all-btn");
+    const ackAllNote = document.getElementById("ack-all-note");
+
+    for (const [kind, label] of Object.entries(alertKindLabels)) {
+      const opt = document.createElement("option");
+      opt.value = kind;
+      opt.textContent = label;
+      kindFilter.appendChild(opt);
+    }
+
+    function query() {
+      const params = new URLSearchParams({ unacked_only: toggle.checked ? "1" : "0" });
+      if (kindFilter.value) params.set("kind", kindFilter.value);
+      return params;
+    }
 
     async function load() {
       let data;
       try {
-        data = await api(`/api/alerts?unacked_only=${toggle.checked ? "1" : "0"}`);
+        data = await api(`/api/alerts?${query()}`);
       } catch (err) {
         if (err.status === 401) {
           window.location.href = "/login";
@@ -308,6 +324,26 @@
     }
 
     toggle.addEventListener("change", load);
+    kindFilter.addEventListener("change", load);
+    ackAllBtn.addEventListener("click", async () => {
+      const label = kindFilter.value ? (alertKindLabels[kindFilter.value] || kindFilter.value) : "all kinds";
+      if (!window.confirm(`Acknowledge every unacknowledged alert (${label})? This can't be undone.`)) {
+        return;
+      }
+      ackAllBtn.disabled = true;
+      ackAllNote.textContent = "";
+      try {
+        const params = new URLSearchParams();
+        if (kindFilter.value) params.set("kind", kindFilter.value);
+        const data = await api(`/api/alerts/ack-all?${params}`, { method: "POST" });
+        ackAllNote.textContent = `Acknowledged ${data.acknowledged} alert(s).`;
+        await load();
+      } catch (err) {
+        ackAllNote.textContent = "Could not acknowledge: " + (err.code || err.message);
+      } finally {
+        ackAllBtn.disabled = false;
+      }
+    });
     await load();
   }
 

@@ -38,6 +38,7 @@ func newRouter(db *store.DB, sessions *auth.Manager) http.Handler {
 
 	// Admin-only mutations and settings/user management.
 	mux.HandleFunc("POST /api/alerts/{id}/ack", requireAdmin(sessions, true, api.ackAlert))
+	mux.HandleFunc("POST /api/alerts/ack-all", requireAdmin(sessions, true, api.ackAllAlerts))
 	mux.HandleFunc("GET /api/settings", requireAdmin(sessions, true, api.getSettings))
 	mux.HandleFunc("PUT /api/settings", requireAdminElevated(sessions, api.putSettings))
 	mux.HandleFunc("GET /api/interfaces", requireAdmin(sessions, true, api.listInterfaces))

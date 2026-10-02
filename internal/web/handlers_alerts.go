@@ -41,8 +41,9 @@ func (h *apiHandlers) listAlerts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	unackedOnly := r.URL.Query().Get("unacked_only") == "1"
+	kind := r.URL.Query().Get("kind")
 
-	alerts, err := h.db.ListAlerts(limit, unackedOnly)
+	alerts, err := h.db.ListAlerts(limit, unackedOnly, kind)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal_error")
 		return
@@ -77,4 +78,17 @@ func (h *apiHandlers) ackAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// ackAllAlerts marks every unacknowledged alert as acknowledged, optionally
+// restricted to a single kind via ?kind=, letting an admin clear a flood of
+// alerts in one action.
+func (h *apiHandlers) ackAllAlerts(w http.ResponseWriter, r *http.Request) {
+	kind := r.URL.Query().Get("kind")
+	n, err := h.db.AcknowledgeAllAlerts(kind)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "acknowledged": n})
 }
