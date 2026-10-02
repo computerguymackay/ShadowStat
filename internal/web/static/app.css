@@ -447,6 +447,14 @@ main > section:last-of-type { border-bottom: none; }
   padding: 1rem;
   z-index: 100;
 }
+/* An author rule setting `display` always beats the browser's own
+   [hidden] { display: none } — that's a cascade-origin rule, not a
+   specificity one, so the class rule above was unconditionally showing this
+   overlay regardless of the hidden attribute. This re-asserts none whenever
+   hidden is actually present, with higher specificity so it wins. */
+.modal-overlay[hidden] {
+  display: none;
+}
 
 .modal-box {
   display: flex;
