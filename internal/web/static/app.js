@@ -491,10 +491,21 @@
         modal.hidden = true;
         form.removeEventListener("submit", onSubmit);
         cancelBtn.removeEventListener("click", onCancel);
+        modal.removeEventListener("click", onBackdropClick);
+        document.removeEventListener("keydown", onKeydown);
       }
       function onCancel() {
         cleanup();
         reject(new Error("reauth cancelled"));
+      }
+      // Clicking the dark backdrop (not the box itself) or pressing Escape
+      // are the standard ways people expect to back out of a modal — without
+      // these, the only way out was the easy-to-miss "Cancel" button.
+      function onBackdropClick(e) {
+        if (e.target === modal) onCancel();
+      }
+      function onKeydown(e) {
+        if (e.key === "Escape") onCancel();
       }
       async function onSubmit(e) {
         e.preventDefault();
@@ -504,11 +515,24 @@
           cleanup();
           resolve();
         } catch (err) {
-          note.textContent = "Incorrect password.";
+          if (err.code === "unauthenticated") {
+            // The session itself expired (not a wrong password) — every
+            // retry would fail identically, so send them to log in again
+            // instead of leaving them stuck re-typing a password that was
+            // never the problem.
+            cleanup();
+            window.location.href = "/login";
+            return;
+          }
+          form.password.value = "";
+          form.password.focus();
+          note.textContent = err.code === "invalid_credentials" ? "Incorrect password." : "Something went wrong — try again.";
         }
       }
       form.addEventListener("submit", onSubmit);
       cancelBtn.addEventListener("click", onCancel);
+      modal.addEventListener("click", onBackdropClick);
+      document.addEventListener("keydown", onKeydown);
     });
   }
 
