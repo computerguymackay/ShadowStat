@@ -10,27 +10,55 @@
 </head>
 <body>
   {{template "nav" .}}
-  <main data-host-id="{{.HostID}}">
+  <main data-host-id="{{.HostID}}" data-first-seen="{{.HostFirstSeen}}">
     <dl class="device-info">
       {{if .HostDisplayName}}<div><dt>Name</dt><dd>{{.HostDisplayName}}</dd></div>{{end}}
       <div><dt>IP</dt><dd>{{.HostIP}}</dd></div>
       {{if .HostMAC}}<div><dt>MAC</dt><dd>{{.HostMAC}}</dd></div>{{end}}
+      <div><dt>Total sent ↑</dt><dd id="total-sent">—</dd></div>
+      <div><dt>Total received ↓</dt><dd id="total-recv">—</dd></div>
     </dl>
+    <p id="totals-note" class="muted legend"></p>
+
+    <div class="range-picker" role="group" aria-label="Time range">
+      <button type="button" data-range="24h">24h</button>
+      <button type="button" data-range="7d">7 days</button>
+      <button type="button" data-range="30d">30 days</button>
+      <button type="button" data-range="all">Since first seen</button>
+    </div>
+    <p id="range-label" class="muted legend"></p>
 
     <div id="host-graph" class="graph"></div>
+    <p class="muted legend">Drag across the graph to zoom in. Sent ↑ = from this host to the internet. Received ↓ = from the internet to this host.</p>
+    <p id="day-resolution-note" class="muted legend" hidden>Ranges older than 24 hours are summarised per whole day (UTC), so the tables below may include a little traffic either side of the graph's range.</p>
 
-    <h2 class="section-title">Alerts</h2>
-    <ul id="host-alert-list" class="alert-list"></ul>
-    <p id="host-alert-list-empty" class="empty-state" hidden>No alerts for this host.</p>
+    <h2 class="section-title">Who it talks to</h2>
+    <table id="peer-table" class="data-table">
+      <thead>
+        <tr><th>Peer</th><th>Country</th><th>Protocols</th><th>Ports</th><th>Started by</th><th>Sent</th><th>Received</th></tr>
+      </thead>
+      <tbody id="peer-table-body"></tbody>
+    </table>
+    <p id="peer-table-empty" class="empty-state" hidden>No traffic in this range.</p>
 
-    <h2 class="section-title">Recent flows <span class="muted">(last 24h)</span></h2>
+    <h2 class="section-title">Ports &amp; protocols</h2>
+    <table id="service-table" class="data-table">
+      <thead>
+        <tr><th>Protocol</th><th>Port</th><th>Started by</th><th>Peers</th><th>Sent</th><th>Received</th></tr>
+      </thead>
+      <tbody id="service-table-body"></tbody>
+    </table>
+    <p id="service-table-empty" class="empty-state" hidden>No traffic in this range.</p>
+    <p class="muted legend">A "?" after a protocol means it was guessed from the port number only.</p>
+
+    <h2 class="section-title">Connections <span class="muted">(last 24h only)</span></h2>
     <table id="flow-table" class="data-table">
       <thead>
-        <tr><th>Peer</th><th>Port</th><th>Proto</th><th>Direction</th><th>Sent</th><th>Received</th><th>Last seen</th></tr>
+        <tr><th>Peer</th><th>Protocol</th><th>Ports (host → peer)</th><th>Started by</th><th>Sent</th><th>Received</th><th>Last seen</th></tr>
       </thead>
       <tbody id="flow-table-body"></tbody>
     </table>
-    <p id="flow-table-empty" class="empty-state" hidden>No flow detail in this range.</p>
+    <p id="flow-table-empty" class="empty-state" hidden>No connections in this range.</p>
   </main>
   <script src="/static/vendor/uplot/uPlot.iife.min.js"></script>
   <script src="/static/app.js"></script>

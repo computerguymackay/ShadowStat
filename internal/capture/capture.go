@@ -26,9 +26,11 @@ type Source interface {
 	Close() error
 }
 
-// FlowKey canonicalizes a flow's identity for aggregation.
+// FlowKey identifies one conversation from the LAN host's side. There is
+// deliberately no direction in it: both directions of a conversation land in
+// the same entry (as sent and received bytes), and who started it is worked
+// out at flush time from the evidence in FlowAccum.
 type FlowKey struct {
-	Direction  int
 	Proto      int
 	LocalIP    string
 	LocalPort  int
@@ -41,17 +43,19 @@ type FlowEvent struct {
 	Key        FlowKey
 	Timestamp  time.Time
 	Bytes      int
-	IsLocalSrc bool   // true if the packet's source side is the LAN-local address
+	IsLocalSrc bool   // true if the packet was sent by the LAN host
 	LocalMAC   string // Ethernet MAC of the LAN-local side, for device identification
+
+	SYN, ACK    bool   // TCP flags on this packet
+	EchoRequest bool   // ICMP echo request ("ping")
+	Payload     []byte // L4 payload; aliases the packet buffer, so copy before keeping it
 }
 
-// DNSQueryEvent is one observed outbound DNS query, used by the detection
-// engine's DNS volume/entropy detector. Only queries (not responses) are
-// captured, so each user lookup is recorded exactly once.
-type DNSQueryEvent struct {
-	LocalIP   string
-	QName     string
-	QType     uint16
+// PeerNameEvent is one hostname -> IPv4 mapping seen in a DNS answer, used
+// to show remote peers by name.
+type PeerNameEvent struct {
+	IP        string
+	Name      string
 	Timestamp time.Time
 }
 

@@ -2,42 +2,31 @@ package capture
 
 import (
 	"net"
+	"strings"
 	"time"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
-
-	"ShadowStat/internal/store"
 )
 
 const (
 	dnsServicePort = 53
 	dhcpServerPort = 67
 	dhcpClientPort = 68
+
+	// maxNamesPerAnswer bounds how many A records one DNS answer contributes.
+	maxNamesPerAnswer = 16
 )
 
 // DecodeResult bundles everything a single packet can produce: a flow
-// contribution (or two — see Flow2), an outbound DNS query, and/or a
-// DHCP-announced hostname. Each is independently optional (a DHCP packet
-// produces no flow, most packets produce no DNS/DHCP event) — using a struct
-// here instead of a long list of (value, ok) pairs keeps the call site readable.
-//
-// A LAN-to-LAN packet (both source and destination inside the configured
-// subnet) produces TWO flow events, one per host's perspective — Flow from
-// the initiator's side, Flow2 from the receiver's side. Without this, only
-// whichever host happened to be the packet's source would ever see the
-// traffic in its own stats/detectors; the destination side (e.g. this
-// machine, when something on the LAN is scanning or otherwise contacting it)
-// would be invisible.
+// contribution, hostname -> IP mappings from a DNS answer, and/or a
+// DHCP-announced hostname. Each is independently optional.
 type DecodeResult struct {
-	Flow     FlowEvent
-	HasFlow  bool
-	Flow2    FlowEvent
-	HasFlow2 bool
-	DNS      DNSQueryEvent
-	HasDNS   bool
-	DHCP     DHCPHostnameEvent
-	HasDHCP  bool
+	Flow      FlowEvent
+	HasFlow   bool
+	PeerNames []PeerNameEvent
+	DHCP      DHCPHostnameEvent
+	HasDHCP   bool
 }
 
 // Decoder wraps a reusable gopacket.DecodingLayerParser so repeated packet
@@ -63,7 +52,8 @@ type Decoder struct {
 	lan *net.IPNet
 }
 
-// NewDecoder creates a Decoder that classifies flows against lan.
+// NewDecoder creates a Decoder that treats addresses inside lan as the LAN
+// side and everything else as the internet (WAN) side.
 func NewDecoder(lan *net.IPNet) *Decoder {
 	d := &Decoder{lan: lan}
 	d.parser = gopacket.NewDecodingLayerParser(
@@ -76,9 +66,10 @@ func NewDecoder(lan *net.IPNet) *Decoder {
 	return d
 }
 
-// Decode parses a raw packet and reports whatever it finds. Broadcast/
-// unspecified-address traffic (DHCP DISCOVER/OFFER) never becomes a flow —
-// it has no meaningful "host" IP — but is still checked for a DHCP hostname.
+// Decode parses a raw packet and reports whatever it finds. Only packets
+// crossing the WAN boundary (exactly one side inside the LAN subnet) become
+// flows. DNS answers and DHCP hostnames are read from any packet, since the
+// LAN's resolver and DHCP server are usually on the LAN itself.
 func (d *Decoder) Decode(pkt RawPacket) DecodeResult {
 	// Partial decodes are expected (IgnoreUnsupported) and still populate
 	// d.decoded with whatever layers *were* recognized, so the error is
@@ -86,11 +77,12 @@ func (d *Decoder) Decode(pkt RawPacket) DecodeResult {
 	_ = d.parser.DecodeLayers(pkt.Data, &d.decoded)
 
 	var (
-		haveIP           bool
-		haveUDP          bool
+		haveIP, haveUDP  bool
 		srcIP, dstIP     net.IP
 		proto            int
 		srcPort, dstPort int
+		syn, ack, echo   bool
+		payload          []byte
 	)
 
 	for _, lt := range d.decoded {
@@ -105,9 +97,16 @@ func (d *Decoder) Decode(pkt RawPacket) DecodeResult {
 			proto = int(d.ip6.NextHeader)
 		case layers.LayerTypeTCP:
 			srcPort, dstPort = int(d.tcp.SrcPort), int(d.tcp.DstPort)
+			syn, ack = d.tcp.SYN, d.tcp.ACK
+			payload = d.tcp.Payload
 		case layers.LayerTypeUDP:
 			haveUDP = true
 			srcPort, dstPort = int(d.udp.SrcPort), int(d.udp.DstPort)
+			payload = d.udp.Payload
+		case layers.LayerTypeICMPv4:
+			echo = d.icmp4.TypeCode.Type() == layers.ICMPv4TypeEchoRequest
+		case layers.LayerTypeICMPv6:
+			echo = d.icmp6.TypeCode.Type() == layers.ICMPv6TypeEchoRequest
 		}
 	}
 
@@ -124,100 +123,72 @@ func (d *Decoder) Decode(pkt RawPacket) DecodeResult {
 	}
 
 	// DHCP DISCOVER/REQUEST traffic (src 0.0.0.0 and/or broadcast dst) has no
-	// meaningful per-host flow to record — skip flow/DNS handling for it.
+	// meaningful per-host flow to record.
 	if srcIP.IsUnspecified() || dstIP.Equal(net.IPv4bcast) {
 		return result
 	}
-
-	srcLocal := d.lan.Contains(srcIP)
-	dstLocal := d.lan.Contains(dstIP)
 
 	ts := pkt.Timestamp
 	if ts.IsZero() {
 		ts = time.Now()
 	}
-	bytes := len(pkt.Data)
 
-	switch {
-	case srcLocal && dstLocal:
-		// LAN-to-LAN: record from both hosts' perspectives so the receiving
-		// side (e.g. this machine, if it's the one being contacted/scanned by
-		// another LAN device) shows up in its own stats and detectors too.
-		result.Flow = buildFlowEvent(store.DirLANOut, proto, srcIP, srcPort, dstIP, dstPort, d.eth.SrcMAC, ts, bytes, true)
-		result.HasFlow = true
-		result.Flow2 = buildFlowEvent(store.DirLANIn, proto, dstIP, dstPort, srcIP, srcPort, d.eth.DstMAC, ts, bytes, false)
-		result.HasFlow2 = true
-
-		if haveUDP && (srcPort == dnsServicePort || dstPort == dnsServicePort) {
-			if q, ok := d.decodeDNSQuery(srcIP.String(), ts); ok {
-				result.DNS, result.HasDNS = q, true
-			}
-		}
-
-	case srcLocal: // LAN -> WAN
-		result.Flow = buildFlowEvent(store.DirLANToWAN, proto, srcIP, srcPort, dstIP, dstPort, d.eth.SrcMAC, ts, bytes, true)
-		result.HasFlow = true
-		if haveUDP && (srcPort == dnsServicePort || dstPort == dnsServicePort) {
-			if q, ok := d.decodeDNSQuery(srcIP.String(), ts); ok {
-				result.DNS, result.HasDNS = q, true
-			}
-		}
-
-	case dstLocal: // WAN -> LAN
-		result.Flow = buildFlowEvent(store.DirWANToLAN, proto, dstIP, dstPort, srcIP, srcPort, d.eth.DstMAC, ts, bytes, false)
-		result.HasFlow = true
-		if haveUDP && (srcPort == dnsServicePort || dstPort == dnsServicePort) {
-			if q, ok := d.decodeDNSQuery(dstIP.String(), ts); ok {
-				result.DNS, result.HasDNS = q, true
-			}
-		}
-
-	default:
-		// Neither side is in the configured LAN subnet — shouldn't happen
-		// given the BPF filter, but there's no sensible "local" host to
-		// attribute a flow to, so drop it rather than fabricate one.
+	if haveUDP && srcPort == dnsServicePort {
+		result.PeerNames = d.decodeDNSAnswers(ts)
 	}
 
+	srcLocal := d.lan.Contains(srcIP)
+	dstLocal := d.lan.Contains(dstIP)
+	if srcLocal == dstLocal {
+		// Both LAN (not WAN traffic) or neither (no LAN host to attribute it to).
+		return result
+	}
+
+	evt := FlowEvent{
+		Timestamp:   ts,
+		Bytes:       len(pkt.Data),
+		IsLocalSrc:  srcLocal,
+		SYN:         syn,
+		ACK:         ack,
+		EchoRequest: echo,
+		Payload:     payload,
+	}
+	if srcLocal {
+		evt.Key = FlowKey{Proto: proto, LocalIP: srcIP.String(), LocalPort: srcPort, RemoteIP: dstIP.String(), RemotePort: dstPort}
+		evt.LocalMAC = d.eth.SrcMAC.String()
+	} else {
+		evt.Key = FlowKey{Proto: proto, LocalIP: dstIP.String(), LocalPort: dstPort, RemoteIP: srcIP.String(), RemotePort: srcPort}
+		evt.LocalMAC = d.eth.DstMAC.String()
+	}
+	result.Flow, result.HasFlow = evt, true
 	return result
 }
 
-// buildFlowEvent constructs a FlowEvent from the perspective of localIP.
-func buildFlowEvent(direction, proto int, localIP net.IP, localPort int, remoteIP net.IP, remotePort int, localMAC net.HardwareAddr, ts time.Time, bytes int, isLocalSrc bool) FlowEvent {
-	return FlowEvent{
-		Key: FlowKey{
-			Direction:  direction,
-			Proto:      proto,
-			LocalIP:    localIP.String(),
-			LocalPort:  localPort,
-			RemoteIP:   remoteIP.String(),
-			RemotePort: remotePort,
-		},
-		Timestamp:  ts,
-		Bytes:      bytes,
-		IsLocalSrc: isLocalSrc,
-		LocalMAC:   localMAC.String(),
-	}
-}
-
-// decodeDNSQuery manually decodes the UDP payload as DNS — gopacket's
-// DecodingLayerParser chain doesn't auto-dispatch UDP->DNS in this version, so
-// this is invoked directly rather than registered on the parser. Only actual
-// queries (QR=false) with at least one question are reported, so a query and
-// its matching response aren't both counted.
-func (d *Decoder) decodeDNSQuery(localIP string, ts time.Time) (DNSQueryEvent, bool) {
+// decodeDNSAnswers decodes the UDP payload as a DNS response and returns one
+// mapping per A record, named after the question (what the user actually
+// looked up, rather than the final CNAME target).
+func (d *Decoder) decodeDNSAnswers(ts time.Time) []PeerNameEvent {
 	if err := d.dns.DecodeFromBytes(d.udp.Payload, gopacket.NilDecodeFeedback); err != nil {
-		return DNSQueryEvent{}, false
+		return nil
 	}
-	if d.dns.QR || len(d.dns.Questions) == 0 {
-		return DNSQueryEvent{}, false
+	if !d.dns.QR || d.dns.ResponseCode != layers.DNSResponseCodeNoErr || len(d.dns.Questions) == 0 {
+		return nil
 	}
-	q := d.dns.Questions[0]
-	return DNSQueryEvent{
-		LocalIP:   localIP,
-		QName:     string(q.Name),
-		QType:     uint16(q.Type),
-		Timestamp: ts,
-	}, true
+	name := strings.TrimSuffix(strings.ToLower(string(d.dns.Questions[0].Name)), ".")
+	if name == "" {
+		return nil
+	}
+	var out []PeerNameEvent
+	for _, a := range d.dns.Answers {
+		if a.Type != layers.DNSTypeA || a.IP == nil {
+			continue
+		}
+		out = append(out, PeerNameEvent{IP: a.IP.String(), Name: name, Timestamp: ts})
+		if len(out) == maxNamesPerAnswer {
+			break
+		}
+	}
+	return out
 }
 
 // decodeDHCPHostname manually decodes the UDP payload as DHCPv4 — same

@@ -7,11 +7,14 @@ import (
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
-
-	"ShadowStat/internal/store"
 )
 
 func synthTCPPacket(t *testing.T, srcMAC, dstMAC net.HardwareAddr, srcIP, dstIP net.IP, srcPort, dstPort uint16, payload []byte) []byte {
+	t.Helper()
+	return synthTCPFlags(t, srcMAC, dstMAC, srcIP, dstIP, srcPort, dstPort, true, false, payload)
+}
+
+func synthTCPFlags(t *testing.T, srcMAC, dstMAC net.HardwareAddr, srcIP, dstIP net.IP, srcPort, dstPort uint16, syn, ack bool, payload []byte) []byte {
 	t.Helper()
 
 	eth := &layers.Ethernet{
@@ -31,7 +34,8 @@ func synthTCPPacket(t *testing.T, srcMAC, dstMAC net.HardwareAddr, srcIP, dstIP 
 		SrcPort: layers.TCPPort(srcPort),
 		DstPort: layers.TCPPort(dstPort),
 		Seq:     1,
-		SYN:     true,
+		SYN:     syn,
+		ACK:     ack,
 		Window:  1024,
 	}
 
@@ -62,13 +66,16 @@ func TestDecodeClassifiesLANToWAN(t *testing.T) {
 	if !res.HasFlow {
 		t.Fatal("expected decode to succeed")
 	}
-	if res.HasDNS {
-		t.Error("expected no DNS event for a plain TCP packet")
+	if len(res.PeerNames) != 0 {
+		t.Error("expected no DNS names from a plain TCP packet")
 	}
 
 	evt := res.Flow
-	if evt.Key.Direction != 0 {
-		t.Errorf("direction = %d, want 0 (LAN->WAN)", evt.Key.Direction)
+	if !evt.SYN || evt.ACK {
+		t.Errorf("flags SYN=%v ACK=%v, want SYN only", evt.SYN, evt.ACK)
+	}
+	if string(evt.Payload) != "hello" {
+		t.Errorf("payload = %q, want %q", evt.Payload, "hello")
 	}
 	if evt.Key.Proto != int(layers.IPProtocolTCP) {
 		t.Errorf("proto = %d, want %d", evt.Key.Proto, layers.IPProtocolTCP)
@@ -93,62 +100,51 @@ func TestDecodeClassifiesLANToWAN(t *testing.T) {
 	}
 }
 
-func synthDNSQueryPacket(t *testing.T, srcMAC, dstMAC net.HardwareAddr, srcIP, dstIP net.IP, qname string) []byte {
+func synthDNSAnswerPacket(t *testing.T, srcIP, dstIP net.IP, qname string, answers ...net.IP) []byte {
 	t.Helper()
+	srcMAC, _ := net.ParseMAC("aa:bb:cc:dd:ee:10")
+	dstMAC, _ := net.ParseMAC("aa:bb:cc:dd:ee:11")
 
 	eth := &layers.Ethernet{SrcMAC: srcMAC, DstMAC: dstMAC, EthernetType: layers.EthernetTypeIPv4}
 	ip := &layers.IPv4{Version: 4, IHL: 5, TTL: 64, Protocol: layers.IPProtocolUDP, SrcIP: srcIP, DstIP: dstIP}
-	udp := &layers.UDP{SrcPort: layers.UDPPort(51000), DstPort: layers.UDPPort(dnsServicePort)}
+	udp := &layers.UDP{SrcPort: layers.UDPPort(dnsServicePort), DstPort: layers.UDPPort(51000)}
 	dns := &layers.DNS{
-		ID:      1234,
-		OpCode:  layers.DNSOpCodeQuery,
-		RD:      true,
-		QDCount: 1,
-		Questions: []layers.DNSQuestion{
-			{Name: []byte(qname), Type: layers.DNSTypeA, Class: layers.DNSClassIN},
-		},
+		ID: 1234, QR: true, OpCode: layers.DNSOpCodeQuery, RD: true, RA: true,
+		Questions: []layers.DNSQuestion{{Name: []byte(qname), Type: layers.DNSTypeA, Class: layers.DNSClassIN}},
 	}
+	for _, a := range answers {
+		dns.Answers = append(dns.Answers, layers.DNSResourceRecord{
+			Name: []byte(qname), Type: layers.DNSTypeA, Class: layers.DNSClassIN, TTL: 60, IP: a,
+		})
+	}
+	_ = udp.SetNetworkLayerForChecksum(ip)
 
 	buf := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: false}
 	if err := gopacket.SerializeLayers(buf, opts, eth, ip, udp, dns); err != nil {
 		t.Fatalf("serialize test DNS packet: %v", err)
 	}
-	out := make([]byte, len(buf.Bytes()))
-	copy(out, buf.Bytes())
-	return out
+	return append([]byte(nil), buf.Bytes()...)
 }
 
-func TestDecodeExtractsDNSQuery(t *testing.T) {
-	_, lan, err := net.ParseCIDR("192.168.1.0/24")
-	if err != nil {
-		t.Fatal(err)
-	}
+// The LAN's resolver is usually the router, so the answer that names a
+// remote peer is LAN-to-LAN traffic: no flow, but names are still learned.
+func TestDecodeLearnsPeerNamesFromDNSAnswers(t *testing.T) {
+	_, lan, _ := net.ParseCIDR("192.168.1.0/24")
 	d := NewDecoder(lan)
 
-	srcMAC, _ := net.ParseMAC("aa:bb:cc:dd:ee:01")
-	dstMAC, _ := net.ParseMAC("aa:bb:cc:dd:ee:02")
-	data := synthDNSQueryPacket(t, srcMAC, dstMAC,
-		net.ParseIP("192.168.1.50"), net.ParseIP("8.8.8.8"), "example.com")
-
+	data := synthDNSAnswerPacket(t, net.ParseIP("192.168.1.1"), net.ParseIP("192.168.1.50"),
+		"Example.COM", net.ParseIP("93.184.216.34"), net.ParseIP("93.184.216.35"))
 	res := d.Decode(RawPacket{Data: data, Timestamp: time.Unix(1000, 0)})
-	if !res.HasFlow {
-		t.Fatal("expected flow decode to succeed")
+
+	if res.HasFlow {
+		t.Error("expected no flow for LAN-to-LAN DNS traffic")
 	}
-	if res.Flow.Key.RemotePort != dnsServicePort {
-		t.Errorf("remote port = %d, want %d", res.Flow.Key.RemotePort, dnsServicePort)
+	if len(res.PeerNames) != 2 {
+		t.Fatalf("peer names = %+v, want 2", res.PeerNames)
 	}
-	if !res.HasDNS {
-		t.Fatal("expected a DNS query event")
-	}
-	if res.DNS.QName != "example.com" {
-		t.Errorf("qname = %q, want %q", res.DNS.QName, "example.com")
-	}
-	if res.DNS.LocalIP != "192.168.1.50" {
-		t.Errorf("local ip = %q, want %q", res.DNS.LocalIP, "192.168.1.50")
-	}
-	if res.DNS.QType != uint16(layers.DNSTypeA) {
-		t.Errorf("qtype = %d, want %d", res.DNS.QType, layers.DNSTypeA)
+	if res.PeerNames[0].IP != "93.184.216.34" || res.PeerNames[0].Name != "example.com" {
+		t.Errorf("peer name = %+v, want 93.184.216.34 -> example.com", res.PeerNames[0])
 	}
 }
 
@@ -227,9 +223,6 @@ func TestDecodeClassifiesWANToLAN(t *testing.T) {
 		t.Fatal("expected decode to succeed")
 	}
 	evt := res.Flow
-	if evt.Key.Direction != 1 {
-		t.Errorf("direction = %d, want 1 (WAN->LAN)", evt.Key.Direction)
-	}
 	if evt.Key.LocalIP != "192.168.1.50" {
 		t.Errorf("local ip = %s, want 192.168.1.50", evt.Key.LocalIP)
 	}
@@ -241,55 +234,17 @@ func TestDecodeClassifiesWANToLAN(t *testing.T) {
 	}
 }
 
-func TestDecodeLANToLANProducesBothPerspectives(t *testing.T) {
-	_, lan, err := net.ParseCIDR("192.168.1.0/24")
-	if err != nil {
-		t.Fatal(err)
-	}
+// LAN-to-LAN traffic never crosses the WAN link, so it isn't recorded.
+func TestDecodeIgnoresLANToLANTraffic(t *testing.T) {
+	_, lan, _ := net.ParseCIDR("192.168.1.0/24")
 	d := NewDecoder(lan)
 
-	scannerMAC, _ := net.ParseMAC("aa:bb:cc:dd:ee:01")
-	targetMAC, _ := net.ParseMAC("aa:bb:cc:dd:ee:02")
-	// A LAN device (scanner) probing another LAN device (target) — both
-	// addresses are within the configured subnet.
-	data := synthTCPPacket(t, scannerMAC, targetMAC,
-		net.ParseIP("192.168.1.60"), net.ParseIP("192.168.1.50"),
-		51000, 22, []byte(""))
+	a, _ := net.ParseMAC("aa:bb:cc:dd:ee:01")
+	b, _ := net.ParseMAC("aa:bb:cc:dd:ee:02")
+	data := synthTCPPacket(t, a, b, net.ParseIP("192.168.1.60"), net.ParseIP("192.168.1.50"), 51000, 22, nil)
 
-	res := d.Decode(RawPacket{Data: data, Timestamp: time.Unix(1000, 0)})
-	if !res.HasFlow || !res.HasFlow2 {
-		t.Fatalf("expected both flow perspectives, got HasFlow=%v HasFlow2=%v", res.HasFlow, res.HasFlow2)
-	}
-
-	initiator := res.Flow
-	if initiator.Key.Direction != store.DirLANOut {
-		t.Errorf("initiator direction = %d, want %d (DirLANOut)", initiator.Key.Direction, store.DirLANOut)
-	}
-	if initiator.Key.LocalIP != "192.168.1.60" || initiator.Key.RemoteIP != "192.168.1.50" {
-		t.Errorf("initiator local/remote = %s/%s, want 192.168.1.60/192.168.1.50", initiator.Key.LocalIP, initiator.Key.RemoteIP)
-	}
-	if !initiator.IsLocalSrc {
-		t.Error("expected initiator IsLocalSrc = true")
-	}
-	if initiator.LocalMAC != scannerMAC.String() {
-		t.Errorf("initiator MAC = %q, want %q", initiator.LocalMAC, scannerMAC.String())
-	}
-
-	target := res.Flow2
-	if target.Key.Direction != store.DirLANIn {
-		t.Errorf("target direction = %d, want %d (DirLANIn)", target.Key.Direction, store.DirLANIn)
-	}
-	if target.Key.LocalIP != "192.168.1.50" || target.Key.RemoteIP != "192.168.1.60" {
-		t.Errorf("target local/remote = %s/%s, want 192.168.1.50/192.168.1.60", target.Key.LocalIP, target.Key.RemoteIP)
-	}
-	if target.Key.LocalPort != 22 {
-		t.Errorf("target local port = %d, want 22 (the probed port)", target.Key.LocalPort)
-	}
-	if target.IsLocalSrc {
-		t.Error("expected target IsLocalSrc = false")
-	}
-	if target.LocalMAC != targetMAC.String() {
-		t.Errorf("target MAC = %q, want %q", target.LocalMAC, targetMAC.String())
+	if res := d.Decode(RawPacket{Data: data, Timestamp: time.Unix(1000, 0)}); res.HasFlow {
+		t.Errorf("expected no flow for LAN-to-LAN traffic, got %+v", res.Flow)
 	}
 }
 
@@ -339,8 +294,8 @@ func TestDecodeHandlesVLANTaggedTraffic(t *testing.T) {
 	if res.Flow.Key.RemoteIP != "93.184.216.34" {
 		t.Errorf("remote ip = %s, want 93.184.216.34", res.Flow.Key.RemoteIP)
 	}
-	if res.Flow.Key.Direction != store.DirLANToWAN {
-		t.Errorf("direction = %d, want %d (DirLANToWAN)", res.Flow.Key.Direction, store.DirLANToWAN)
+	if !res.Flow.IsLocalSrc {
+		t.Error("expected the LAN host to be the sender")
 	}
 	if res.Flow.LocalMAC != srcMAC.String() {
 		t.Errorf("local MAC = %q, want %q", res.Flow.LocalMAC, srcMAC.String())

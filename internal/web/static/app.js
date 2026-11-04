@@ -97,270 +97,102 @@
     );
   }
 
-  const alertKindLabels = {
-    new_destination: "New destination",
-    beaconing: "Beaconing",
-    exfil_ratio: "Upload/download ratio",
-    dns_anomaly: "DNS anomaly",
-    port_scan: "Port scan",
-    geo_watchlist: "Country watchlist",
+  const l4Names = { 1: "ICMP", 6: "TCP", 17: "UDP", 47: "GRE", 50: "ESP", 58: "ICMPv6" };
+  function l4Name(n) {
+    return l4Names[n] || "IP proto " + n;
+  }
+
+  function el(tag, className, text) {
+    const e = document.createElement(tag);
+    if (className) e.className = className;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  // appLabel renders an application-protocol name with its confidence:
+  // payload-confirmed names show plainly, port-only guesses get a "?", and
+  // unknown stays "Unknown" rather than pretending.
+  function appLabel(name, confidence, proto) {
+    if (!name) {
+      const l4 = l4Name(proto);
+      const span = el("span", "muted", proto === 1 || proto === 58 ? l4 : "Unknown");
+      span.title = "Not identified";
+      return span;
+    }
+    const span = el("span", "", confidence >= 2 ? name : name + "?");
+    span.title = confidence >= 2 ? "Identified from the traffic itself" : "Guessed from the port number only";
+    return span;
+  }
+
+  function protoListLabel(names) {
+    if (!names || names.length === 0) return "—";
+    return names.map((n) => n || "Unknown").join(", ");
+  }
+
+  const directionLabels = {
+    0: ["Outbound", "This host started the connection"],
+    1: ["Inbound", "Someone on the internet started the connection to this host"],
+    4: ["Unknown", "Couldn't tell who started it (e.g. it was already running when first seen)"],
   };
-
-  // detailRow appends a "label: value" row to a detail <dl>.
-  function detailRow(dl, label, value) {
-    const row = document.createElement("div");
-    const dt = document.createElement("dt");
-    dt.textContent = label;
-    const dd = document.createElement("dd");
-    dd.textContent = value;
-    row.appendChild(dt);
-    row.appendChild(dd);
-    dl.appendChild(row);
+  function directionLabel(d) {
+    const [text, title] = directionLabels[d] || directionLabels[4];
+    const span = el("span", "dir dir-" + text.toLowerCase(), text);
+    span.title = title;
+    return span;
   }
 
-  // buildAlertDetail parses an alert's JSON detail blob into a human-readable
-  // panel, tailored per detector kind since each has a different shape.
-  // Falls back to raw key/value pairs for anything it doesn't recognize, so
-  // this never hides information even if a field is missing/unexpected.
-  function buildAlertDetail(kind, direction, detailStr) {
-    const dl = document.createElement("dl");
-    dl.className = "alert-detail-fields";
-
-    let d = {};
-    try {
-      d = JSON.parse(detailStr || "{}");
-    } catch (e) {
-      const pre = document.createElement("pre");
-      pre.textContent = detailStr || "(no detail)";
-      return pre;
-    }
-
-    const directionLabels = {
-      outbound: "Outbound — this device initiated the traffic",
-      inbound: "Inbound — a remote host contacted this device (no request from this device seen)",
-      bidirectional: "Bidirectional — this device initiated it, and the peer also responded/reached back",
-      unknown: "Unknown",
-    };
-    detailRow(dl, "Direction", directionLabels[direction] || directionLabels.outbound);
-
-    switch (kind) {
-      case "port_scan": {
-        detailRow(dl, "Target", d.remote_ip);
-        detailRow(dl, "Distinct ports probed", String(d.port_count));
-        if (Array.isArray(d.ports)) {
-          const list = d.ports.join(", ") + (d.ports_truncated ? ", …" : "");
-          detailRow(dl, "Ports", list);
-        }
-        detailRow(dl, "Window", `${d.window_seconds}s`);
-        break;
-      }
-      case "new_destination": {
-        detailRow(dl, "Peer", `${d.remote_ip}:${d.remote_port}`);
-        detailRow(dl, "Why it's flagged", "Not contacted by this host in the last 30 days");
-        break;
-      }
-      case "beaconing": {
-        detailRow(dl, "Peer", `${d.remote_ip}:${d.remote_port}`);
-        detailRow(dl, "Mean interval", `${Math.round(d.mean_interval_s)}s`);
-        detailRow(dl, "Observations", String(d.observations));
-        break;
-      }
-      case "exfil_ratio": {
-        detailRow(dl, "Sent", fmtBytes(d.bytes_sent));
-        detailRow(dl, "Received", fmtBytes(d.bytes_recv));
-        detailRow(dl, "Ratio", `${Number(d.ratio).toFixed(1)}x`);
-        break;
-      }
-      case "dns_anomaly": {
-        if (d.qname) {
-          detailRow(dl, "Domain", d.qname);
-          detailRow(dl, "Why it's flagged", "High-entropy name, suggestive of a DGA (domain generation algorithm)");
-        } else {
-          detailRow(dl, "Query count", String(d.query_count));
-          detailRow(dl, "Window", `${d.window_seconds}s`);
-        }
-        break;
-      }
-      case "geo_watchlist": {
-        detailRow(dl, "Peer", d.remote_ip);
-        detailRow(dl, "Country", d.country);
-        detailRow(dl, "Why it's flagged", "Address is allocated to a country on the watchlist");
-        break;
-      }
-      default: {
-        for (const [k, v] of Object.entries(d)) {
-          detailRow(dl, k, String(v));
-        }
-      }
-    }
-    return dl;
+  const startedByLabels = {
+    host: ["This host", "Every connection was started by this host"],
+    remote: ["Remote peer", "Every connection was started from the internet side"],
+    both: ["Both", "Some connections were started by each side"],
+    unknown: ["Unknown", "Couldn't tell who started the connections"],
+  };
+  function startedByLabel(s) {
+    const [text, title] = startedByLabels[s] || startedByLabels.unknown;
+    const span = el("span", "dir", text);
+    span.title = title;
+    return span;
   }
 
-  // Renders a list of alerts into listEl (a <ul>), showing emptyEl instead if
-  // there are none. showHostLink includes a link to the host's detail page
-  // (used on the global alerts page; omitted on a host's own alerts section).
-  function renderAlertList(listEl, emptyEl, alerts, showHostLink) {
-    listEl.innerHTML = "";
-    if (!alerts || alerts.length === 0) {
-      listEl.hidden = true;
-      emptyEl.hidden = false;
-      return;
-    }
-    listEl.hidden = false;
-    emptyEl.hidden = true;
-
-    for (const a of alerts) {
-      const li = document.createElement("li");
-      li.className = "alert-item severity-" + a.severity + (a.acknowledged ? " acknowledged" : "");
-
-      const main = document.createElement("div");
-      main.className = "alert-main";
-
-      const body = document.createElement("button");
-      body.type = "button";
-      body.className = "alert-body";
-      body.setAttribute("aria-expanded", "false");
-
-      const summary = document.createElement("div");
-      summary.className = "alert-summary";
-      summary.textContent = a.summary;
-      body.appendChild(summary);
-
-      const meta = document.createElement("div");
-      meta.className = "alert-meta";
-      const kindSpan = document.createElement("span");
-      kindSpan.textContent = alertKindLabels[a.kind] || a.kind;
-      meta.appendChild(kindSpan);
-      const timeSpan = document.createElement("span");
-      timeSpan.textContent = fmtTime(a.detected_at);
-      meta.appendChild(timeSpan);
-      if (showHostLink) {
-        const hostLink = document.createElement("a");
-        hostLink.href = "/hosts/" + a.host_id;
-        hostLink.textContent = a.host_ip;
-        hostLink.addEventListener("click", (e) => e.stopPropagation());
-        meta.appendChild(hostLink);
-      }
-      const chevron = document.createElement("span");
-      chevron.className = "alert-chevron";
-      chevron.textContent = "Details ▾";
-      meta.appendChild(chevron);
-      body.appendChild(meta);
-      main.appendChild(body);
-
-      const detailPanel = document.createElement("div");
-      detailPanel.className = "alert-detail";
-      detailPanel.hidden = true;
-      let built = false;
-      body.addEventListener("click", () => {
-        if (!built) {
-          detailPanel.appendChild(buildAlertDetail(a.kind, JSON.parse(a.detail || "{}").direction, a.detail));
-          built = true;
-        }
-        const expanded = !detailPanel.hidden;
-        detailPanel.hidden = expanded;
-        body.setAttribute("aria-expanded", String(!expanded));
-        chevron.textContent = expanded ? "Details ▾" : "Details ▴";
-      });
-      main.appendChild(detailPanel);
-      li.appendChild(main);
-
-      if (!a.acknowledged) {
-        const btn = document.createElement("button");
-        btn.className = "alert-ack-btn";
-        btn.type = "button";
-        btn.textContent = "Acknowledge";
-        btn.addEventListener("click", async () => {
-          btn.disabled = true;
-          try {
-            await api(`/api/alerts/${a.id}/ack`, { method: "POST" });
-            li.classList.add("acknowledged");
-            btn.remove();
-          } catch (err) {
-            btn.disabled = false;
-          }
-        });
-        li.appendChild(btn);
-      }
-
-      listEl.appendChild(li);
-    }
+  function fmtDate(unixSeconds) {
+    return new Date(unixSeconds * 1000).toLocaleDateString();
   }
 
-  async function initAlerts() {
-    wireLogoutButton();
-    const listEl = document.getElementById("alert-list");
-    const emptyEl = document.getElementById("alert-list-empty");
-    const toggle = document.getElementById("unacked-toggle");
-    const kindFilter = document.getElementById("kind-filter");
-    const ackAllBtn = document.getElementById("ack-all-btn");
-    const ackAllNote = document.getElementById("ack-all-note");
+  // tdNode is td() for cells whose content is an element rather than text.
+  function tdNode(label, node) {
+    const cell = td(label, "");
+    cell.appendChild(node);
+    return cell;
+  }
 
-    for (const [kind, label] of Object.entries(alertKindLabels)) {
-      const opt = document.createElement("option");
-      opt.value = kind;
-      opt.textContent = label;
-      kindFilter.appendChild(opt);
+  function showTable(table, emptyEl, hasRows) {
+    table.hidden = !hasRows;
+    emptyEl.hidden = hasRows;
+  }
+
+  function redirectIfLoggedOut(err) {
+    if (err.status === 401) {
+      window.location.href = "/login";
+      return true;
     }
-
-    function query() {
-      const params = new URLSearchParams({ unacked_only: toggle.checked ? "1" : "0" });
-      if (kindFilter.value) params.set("kind", kindFilter.value);
-      return params;
-    }
-
-    async function load() {
-      let data;
-      try {
-        data = await api(`/api/alerts?${query()}`);
-      } catch (err) {
-        if (err.status === 401) {
-          window.location.href = "/login";
-          return;
-        }
-        throw err;
-      }
-      renderAlertList(listEl, emptyEl, data.alerts, true);
-    }
-
-    toggle.addEventListener("change", load);
-    kindFilter.addEventListener("change", load);
-    ackAllBtn.addEventListener("click", async () => {
-      const label = kindFilter.value ? (alertKindLabels[kindFilter.value] || kindFilter.value) : "all kinds";
-      if (!window.confirm(`Acknowledge every unacknowledged alert (${label})? This can't be undone.`)) {
-        return;
-      }
-      ackAllBtn.disabled = true;
-      ackAllNote.textContent = "";
-      try {
-        const params = new URLSearchParams();
-        if (kindFilter.value) params.set("kind", kindFilter.value);
-        const data = await api(`/api/alerts/ack-all?${params}`, { method: "POST" });
-        ackAllNote.textContent = `Acknowledged ${data.acknowledged} alert(s).`;
-        await load();
-      } catch (err) {
-        ackAllNote.textContent = "Could not acknowledge: " + (err.code || err.message);
-      } finally {
-        ackAllBtn.disabled = false;
-      }
-    });
-    await load();
+    return false;
   }
 
   async function initDashboard() {
     wireLogoutButton();
     const tbody = document.getElementById("host-table-body");
     const emptyEl = document.getElementById("host-table-empty");
+    const summaryEl = document.getElementById("wan-summary");
     let data;
     try {
       data = await api("/api/hosts");
     } catch (err) {
-      if (err.status === 401) {
-        window.location.href = "/login";
-        return;
-      }
+      if (redirectIfLoggedOut(err)) return;
       throw err;
     }
+
+    summaryEl.textContent =
+      "WAN, last 24 hours: ↑ " + fmtBytes(data.summary.sent_24h) + " sent · ↓ " + fmtBytes(data.summary.recv_24h) + " received";
 
     if (!data.hosts || data.hosts.length === 0) {
       document.getElementById("host-table").hidden = true;
@@ -371,17 +203,24 @@
     for (const host of data.hosts) {
       const tr = document.createElement("tr");
       tr.tabIndex = 0;
-      tr.addEventListener("click", () => {
-        window.location.href = "/hosts/" + host.id;
-      });
+      const open = () => (window.location.href = "/hosts/" + host.id);
+      tr.addEventListener("click", open);
       tr.addEventListener("keydown", (e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          window.location.href = "/hosts/" + host.id;
+          open();
         }
       });
 
-      tr.appendChild(td("Host", host.display_name || host.ip));
+      const nameCell = el("div", "", host.display_name || host.ip);
+      if (host.display_name) nameCell.appendChild(el("div", "sub", host.ip));
+      tr.appendChild(tdNode("Host", nameCell));
+      tr.appendChild(td("Sent (24h)", fmtBytes(host.sent_24h)));
+      tr.appendChild(td("Received (24h)", fmtBytes(host.recv_24h)));
+      const totals = td("Since first seen", "↑ " + fmtBytes(host.total_sent) + "  ↓ " + fmtBytes(host.total_recv));
+      totals.title = "Counted since " + fmtDate(host.totals_since || host.first_seen);
+      tr.appendChild(totals);
+      tr.appendChild(td("Top protocols", protoListLabel(host.top_protocols)));
       tr.appendChild(td("Last seen", fmtTime(host.last_seen)));
 
       const sparkTd = td("Activity (last hour)", "");
@@ -399,11 +238,12 @@
     wireLogoutButton();
     const main = document.querySelector("main[data-host-id]");
     const hostID = main.dataset.hostId;
-
-    const now = Math.floor(Date.now() / 1000);
-    let from = now - 24 * 3600;
+    const firstSeen = Number(main.dataset.firstSeen) || 0;
+    const DAY = 24 * 3600;
 
     const graphEl = document.getElementById("host-graph");
+    const rangeLabel = document.getElementById("range-label");
+    const rangeButtons = document.querySelectorAll(".range-picker button");
     let plot;
 
     function resizePlot() {
@@ -411,6 +251,23 @@
       plot.setSize({ width: graphEl.clientWidth, height: plot.height });
     }
     onResize(resizePlot);
+
+    async function loadTotals() {
+      const t = await api(`/api/hosts/${hostID}/totals`);
+      document.getElementById("total-sent").textContent = fmtBytes(t.bytes_sent);
+      document.getElementById("total-recv").textContent = fmtBytes(t.bytes_recv);
+      const note = document.getElementById("totals-note");
+      if (t.totals_since) {
+        let text = "Totals count from " + fmtDate(t.totals_since) + ".";
+        if (t.exact_since) {
+          text +=
+            " Traffic before " + fmtDate(t.exact_since) + " was rebuilt from older summaries when ShadowStat was upgraded, and may be incomplete.";
+        }
+        note.textContent = text;
+      } else {
+        note.textContent = "No traffic counted yet.";
+      }
+    }
 
     async function loadSeries(from, to) {
       const data = await api(`/api/hosts/${hostID}/series?from=${from}&to=${to}`);
@@ -428,16 +285,18 @@
           height: 300,
           series: [
             {},
-            { label: "Sent", stroke: "#4f8cff" },
-            { label: "Received", stroke: "#ff8c4f" },
+            { label: "Sent ↑", stroke: "#4f8cff", value: (u, v) => (v == null ? "—" : fmtBytes(v)) },
+            { label: "Received ↓", stroke: "#ff8c4f", value: (u, v) => (v == null ? "—" : fmtBytes(v)) },
           ],
+          axes: [{}, { values: (u, vals) => vals.map((v) => fmtBytes(v)), size: 70 }],
           hooks: {
             setSelect: [
               (u) => {
                 if (u.select.width <= 0) return;
                 const newFrom = Math.round(u.posToVal(u.select.left, "x"));
                 const newTo = Math.round(u.posToVal(u.select.left + u.select.width, "x"));
-                loadSeries(newFrom, newTo);
+                u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false);
+                setRange(newFrom, newTo, null);
               },
             ],
           },
@@ -445,6 +304,46 @@
         [t, sent, recv],
         graphEl
       );
+    }
+
+    async function loadBreakdown(from, to) {
+      const data = await api(`/api/hosts/${hostID}/breakdown?from=${from}&to=${to}`);
+      document.getElementById("day-resolution-note").hidden = !data.day_resolution;
+
+      const peerBody = document.getElementById("peer-table-body");
+      peerBody.innerHTML = "";
+      for (const p of data.peers) {
+        const tr = document.createElement("tr");
+        const who = el("div", "", p.name || p.remote_ip);
+        if (p.name) {
+          const sub = el("div", "sub", p.remote_ip);
+          sub.title = "Name taken from the most recent DNS answer that pointed at this address";
+          who.appendChild(sub);
+        }
+        tr.appendChild(tdNode("Peer", who));
+        tr.appendChild(td("Country", p.country || "—"));
+        tr.appendChild(td("Protocols", protoListLabel(p.protocols)));
+        tr.appendChild(td("Ports", p.ports.filter((n) => n > 0).join(", ") || "—"));
+        tr.appendChild(tdNode("Started by", startedByLabel(p.started_by)));
+        tr.appendChild(td("Sent", fmtBytes(p.bytes_sent)));
+        tr.appendChild(td("Received", fmtBytes(p.bytes_recv)));
+        peerBody.appendChild(tr);
+      }
+      showTable(document.getElementById("peer-table"), document.getElementById("peer-table-empty"), data.peers.length > 0);
+
+      const svcBody = document.getElementById("service-table-body");
+      svcBody.innerHTML = "";
+      for (const s of data.services) {
+        const tr = document.createElement("tr");
+        tr.appendChild(tdNode("Protocol", appLabel(s.app_proto, s.app_confidence, s.proto)));
+        tr.appendChild(td("Port", s.service_port > 0 ? `${s.service_port}/${l4Name(s.proto)}` : l4Name(s.proto)));
+        tr.appendChild(tdNode("Started by", startedByLabel(s.started_by)));
+        tr.appendChild(td("Peers", String(s.peers)));
+        tr.appendChild(td("Sent", fmtBytes(s.bytes_sent)));
+        tr.appendChild(td("Received", fmtBytes(s.bytes_recv)));
+        svcBody.appendChild(tr);
+      }
+      showTable(document.getElementById("service-table"), document.getElementById("service-table-empty"), data.services.length > 0);
     }
 
     async function loadFlows(from, to) {
@@ -457,53 +356,53 @@
       try {
         data = await api(`/api/hosts/${hostID}/flows?from=${from}&to=${to}&limit=200`);
       } catch (err) {
-        table.hidden = true;
-        emptyEl.hidden = false;
-        return; // range too old for flow detail, or other error
-      }
-
-      if (!data.flows || data.flows.length === 0) {
-        table.hidden = true;
-        emptyEl.hidden = false;
+        emptyEl.textContent = "Individual connections are only kept for the last 24 hours.";
+        showTable(table, emptyEl, false);
         return;
       }
-      table.hidden = false;
-      emptyEl.hidden = true;
+      emptyEl.textContent = "No connections in this range.";
+      showTable(table, emptyEl, data.flows.length > 0);
 
-      const dirLabels = ["LAN→WAN", "WAN→LAN", "LAN→LAN (out)", "LAN→LAN (in)"];
       for (const f of data.flows) {
         const tr = document.createElement("tr");
-        tr.appendChild(td("Peer", f.RemoteIP));
-        tr.appendChild(td("Port", f.RemotePort));
-        tr.appendChild(td("Proto", f.Proto));
-        tr.appendChild(td("Direction", dirLabels[f.Direction] || f.Direction));
-        tr.appendChild(td("Sent", fmtBytes(f.BytesSent)));
-        tr.appendChild(td("Received", fmtBytes(f.BytesRecv)));
-        tr.appendChild(td("Last seen", fmtTime(f.LastSeen)));
+        tr.appendChild(td("Peer", f.remote_ip));
+        tr.appendChild(tdNode("Protocol", appLabel(f.app_proto, f.app_confidence, f.proto)));
+        tr.appendChild(td("Ports", f.proto === 6 || f.proto === 17 ? `${f.local_port} → ${f.remote_port}/${l4Name(f.proto)}` : l4Name(f.proto)));
+        tr.appendChild(tdNode("Started by", directionLabel(f.direction)));
+        tr.appendChild(td("Sent", fmtBytes(f.bytes_sent)));
+        tr.appendChild(td("Received", fmtBytes(f.bytes_recv)));
+        tr.appendChild(td("Last seen", fmtTime(f.last_seen)));
         tbody.appendChild(tr);
       }
     }
 
-    async function loadAlerts() {
-      const listEl = document.getElementById("host-alert-list");
-      const emptyEl = document.getElementById("host-alert-list-empty");
+    async function setRange(from, to, presetName) {
+      for (const b of rangeButtons) b.classList.toggle("active", b.dataset.range === presetName);
+      rangeLabel.textContent = "Showing " + fmtTime(from) + " – " + fmtTime(to);
       try {
-        const data = await api(`/api/hosts/${hostID}/alerts`);
-        renderAlertList(listEl, emptyEl, data.alerts, false);
+        await Promise.all([loadSeries(from, to), loadBreakdown(from, to), loadFlows(from, to)]);
       } catch (err) {
-        // non-fatal: leave the section empty rather than breaking the page
+        redirectIfLoggedOut(err);
       }
     }
 
-    try {
-      await loadSeries(from, now);
-      await loadFlows(from, now);
-      await loadAlerts();
-    } catch (err) {
-      if (err.status === 401) {
-        window.location.href = "/login";
-      }
+    function presetRange(name) {
+      const now = Math.floor(Date.now() / 1000);
+      const spans = { "24h": DAY, "7d": 7 * DAY, "30d": 30 * DAY };
+      const from = name === "all" ? Math.min(firstSeen || now - DAY, now - 60) : now - spans[name];
+      setRange(from, now, name);
     }
+
+    for (const b of rangeButtons) {
+      b.addEventListener("click", () => presetRange(b.dataset.range));
+    }
+
+    try {
+      await loadTotals();
+    } catch (err) {
+      if (redirectIfLoggedOut(err)) return;
+    }
+    presetRange("24h");
   }
 
   // withElevation runs actionFn(); if the server says the session needs a
@@ -586,10 +485,7 @@
     const subnetInput = document.getElementById("lan-subnet-input");
     const retentionSelect = document.getElementById("retention-select");
     const generalNote = document.getElementById("general-settings-note");
-    const detectorNote = document.getElementById("detector-settings-note");
-    const detectorForm = document.getElementById("detector-settings-form");
     const generalForm = document.getElementById("general-settings-form");
-    const geoWatchlistInput = document.getElementById("geo-watchlist-input");
 
     async function loadGeneralSettings() {
       const [ifaceData, settings] = await Promise.all([api("/api/interfaces"), api("/api/settings")]);
@@ -604,11 +500,6 @@
       if (settings.capture_interface) ifaceSelect.value = settings.capture_interface;
       if (settings.lan_subnet_cidr) subnetInput.value = settings.lan_subnet_cidr;
       if (settings.retention_days) retentionSelect.value = settings.retention_days;
-
-      for (const cb of detectorForm.querySelectorAll('input[type="checkbox"]')) {
-        cb.checked = settings[cb.name] !== "0"; // missing key defaults to enabled
-      }
-      geoWatchlistInput.value = settings.geo_watchlist_countries || "";
     }
 
     generalForm.addEventListener("submit", async (e) => {
@@ -630,22 +521,6 @@
           : "Saved.";
       } catch (err) {
         generalNote.textContent = "Could not save: " + (err.code || err.message);
-      }
-    });
-
-    detectorForm.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      detectorNote.textContent = "";
-      const payload = {};
-      for (const cb of detectorForm.querySelectorAll('input[type="checkbox"]')) {
-        payload[cb.name] = cb.checked ? "1" : "0";
-      }
-      payload.geo_watchlist_countries = geoWatchlistInput.value;
-      try {
-        await withElevation(() => api("/api/settings", { method: "PUT", body: JSON.stringify(payload) }));
-        detectorNote.textContent = "Saved.";
-      } catch (err) {
-        detectorNote.textContent = "Could not save: " + (err.code || err.message);
       }
     });
 
@@ -688,7 +563,7 @@
         const actionsTd = td("", "");
         const delBtn = document.createElement("button");
         delBtn.type = "button";
-        delBtn.className = "alert-ack-btn";
+        delBtn.className = "small-btn";
         delBtn.textContent = "Delete";
         delBtn.addEventListener("click", async () => {
           if (!confirm(`Delete user "${u.username}"?`)) return;
@@ -737,5 +612,5 @@
     wireLoginForm();
   });
 
-  window.ShadowStat = { initDashboard, initHostDetail, initAlerts, initSettings };
+  window.ShadowStat = { initDashboard, initHostDetail, initSettings };
 })();

@@ -12,24 +12,6 @@ const (
 	KeyHTTPListenAddr    = "http_listen_addr"
 	KeyFlushIntervalSecs = "flush_interval_seconds"
 	KeySetupComplete     = "setup_complete"
-
-	// Per-detector on/off toggles. Value is "1" (enabled) or "0" (disabled);
-	// a missing key means enabled — detectors default on, so an install that
-	// predates these settings existing doesn't silently lose detection.
-	KeyDetectorNewDestination = "detector_new_destination_enabled"
-	KeyDetectorBeaconing      = "detector_beaconing_enabled"
-	KeyDetectorExfilRatio     = "detector_exfil_ratio_enabled"
-	KeyDetectorDNSAnomaly     = "detector_dns_anomaly_enabled"
-	KeyDetectorPortScan       = "detector_port_scan_enabled"
-	KeyDetectorGeoWatchlist   = "detector_geo_watchlist_enabled"
-
-	// KeyGeoWatchlistCountries holds the admin-configured, comma-separated
-	// list of ISO 3166-1 alpha-2 country codes (e.g. "CN,RU,KP,IR") to alert
-	// on. Deliberately has no default value — unlike the other detectors,
-	// there's no sane site-independent list of "unexpected" countries, so an
-	// unset/empty value means the detector has nothing to check and stays
-	// silent rather than guessing on the admin's behalf.
-	KeyGeoWatchlistCountries = "geo_watchlist_countries"
 )
 
 // GetSetting returns the value for key, or ("", false) if unset.
@@ -97,17 +79,4 @@ func (db *DB) AllSettings() (map[string]string, error) {
 		out[k] = v
 	}
 	return out, rows.Err()
-}
-
-// DetectorEnabled reports whether the detector controlled by settingKey (one
-// of the KeyDetector* constants) is enabled. Defaults to true — on a lookup
-// error, or if the key has never been set (e.g. an install from before
-// per-detector toggles existed) — so detection fails open rather than silently
-// going dark.
-func (db *DB) DetectorEnabled(settingKey string) bool {
-	v, ok, err := db.GetSetting(settingKey)
-	if err != nil || !ok {
-		return true
-	}
-	return v != "0"
 }

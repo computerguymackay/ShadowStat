@@ -12,9 +12,11 @@
   {{template "nav" .}}
   <main>
     <h1 class="page-title">Hosts</h1>
+    <p id="wan-summary" class="wan-summary"></p>
+    <p class="muted legend">Sent = from the host to the internet. Received = from the internet to the host. Busiest hosts first.</p>
     <table id="host-table" class="data-table">
       <thead>
-        <tr><th>Host</th><th>Last seen</th><th>Activity (last hour)</th></tr>
+        <tr><th>Host</th><th>Sent (24h)</th><th>Received (24h)</th><th>Since first seen</th><th>Top protocols</th><th>Last seen</th><th>Activity (last hour)</th></tr>
       </thead>
       <tbody id="host-table-body"></tbody>
     </table>

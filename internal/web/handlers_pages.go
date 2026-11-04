@@ -1,7 +1,6 @@
 package web
 
 import (
-	"log"
 	"net/http"
 
 	"ShadowStat/internal/store"
@@ -19,19 +18,14 @@ type pageVars struct {
 	HostIP          string
 	HostDisplayName string
 	HostMAC         string
-	UnackedAlerts   int
-	OnAlertsPage    bool
+	HostFirstSeen   int64
 	OnSettingsPage  bool
 	IsAdmin         bool
 }
 
 func (h *pageHandlers) navVars(r *http.Request) pageVars {
-	count, err := h.db.CountUnacknowledgedAlerts()
-	if err != nil {
-		log.Printf("web: count unacknowledged alerts: %v", err)
-	}
 	sess := sessionFromContext(r.Context())
-	return pageVars{UnackedAlerts: count, IsAdmin: sess != nil && sess.IsAdmin()}
+	return pageVars{IsAdmin: sess != nil && sess.IsAdmin()}
 }
 
 func (h *pageHandlers) login(w http.ResponseWriter, r *http.Request) {
@@ -64,19 +58,13 @@ func (h *pageHandlers) hostDetail(w http.ResponseWriter, r *http.Request) {
 	v.HostIP = host.IP
 	v.HostDisplayName = host.DisplayName.String
 	v.HostMAC = host.MACAddress.String
+	v.HostFirstSeen = host.FirstSeen
 	if v.HostDisplayName != "" {
 		v.Breadcrumb = v.HostDisplayName
 	} else {
 		v.Breadcrumb = host.IP
 	}
 	renderTemplate(w, "host_detail.html", &v)
-}
-
-func (h *pageHandlers) alerts(w http.ResponseWriter, r *http.Request) {
-	v := h.navVars(r)
-	v.Breadcrumb = "Alerts"
-	v.OnAlertsPage = true
-	renderTemplate(w, "alerts.html", &v)
 }
 
 func (h *pageHandlers) settings(w http.ResponseWriter, r *http.Request) {

@@ -22,19 +22,24 @@ type Pipeline struct {
 	hostCache       map[string]int64    // local IP -> host_id, populated once and never cleared
 	bumpedThisFlush map[string]struct{} // local IPs already touched (last_seen/MAC) in the current flush() call
 
+	// convs remembers what's been worked out about each conversation (who
+	// started it, its protocol), so later flush windows — which usually see
+	// no handshake and only mid-stream payload — keep the answer. Only
+	// touched from the flush goroutine.
+	convs map[FlowKey]*convState
+
 	macMu   sync.Mutex
 	macByIP map[string]string // local IP -> most recently observed MAC, guarded by macMu
 
-	dnsMu  sync.Mutex
-	dnsBuf []DNSQueryEvent // buffered DNS queries between flushes, guarded by dnsMu
+	namesMu  sync.Mutex
+	namesBuf []PeerNameEvent // DNS-learned peer names between flushes, guarded by namesMu
 
 	dhcpMu  sync.Mutex
 	dhcpBuf []DHCPHostnameEvent // buffered DHCP hostname sightings between flushes, guarded by dhcpMu
 }
 
-// NewPipeline builds a Pipeline. lan is the configured LAN subnet, used both to
-// build the decoder's direction classification and (by the caller) to compile
-// the BPF filter applied to src.
+// NewPipeline builds a Pipeline. lan is the configured LAN subnet: addresses
+// inside it are LAN hosts, everything else is the internet side of the WAN link.
 func NewPipeline(db *store.DB, src Source, lan *net.IPNet, flushEvery time.Duration) *Pipeline {
 	return &Pipeline{
 		db:         db,
@@ -44,8 +49,27 @@ func NewPipeline(db *store.DB, src Source, lan *net.IPNet, flushEvery time.Durat
 		flushEvery: flushEvery,
 		hostCache:  make(map[string]int64),
 		macByIP:    make(map[string]string),
+		convs:      make(map[FlowKey]*convState),
 	}
 }
+
+// convState is what the pipeline knows about one conversation across flushes.
+type convState struct {
+	direction   int
+	servicePort int
+	handshake   bool // direction came from a TCP handshake/ping, not a port guess
+	app         string
+	conf        int
+	touched     int64 // wall-clock unix seconds of the last flush that saw it
+}
+
+const (
+	// convIdle is how long a conversation is remembered after its last packet.
+	convIdle = 10 * 60
+	// maxConvs caps the conversation cache. Past it, new conversations are
+	// still recorded correctly; they just re-derive their labels each flush.
+	maxConvs = 100_000
+)
 
 // Run starts the capture pipeline and blocks until ctx is canceled, performing
 // a final flush before returning. Safe to run in its own goroutine.
@@ -63,14 +87,10 @@ func (p *Pipeline) Run(ctx context.Context) error {
 				p.agg.Add(result.Flow)
 				p.rememberMAC(result.Flow)
 			}
-			if result.HasFlow2 {
-				p.agg.Add(result.Flow2)
-				p.rememberMAC(result.Flow2)
-			}
-			if result.HasDNS {
-				p.dnsMu.Lock()
-				p.dnsBuf = append(p.dnsBuf, result.DNS)
-				p.dnsMu.Unlock()
+			if len(result.PeerNames) > 0 {
+				p.namesMu.Lock()
+				p.namesBuf = append(p.namesBuf, result.PeerNames...)
+				p.namesMu.Unlock()
 			}
 			if result.HasDHCP {
 				p.dhcpMu.Lock()
@@ -114,20 +134,24 @@ func (p *Pipeline) flush() {
 				log.Printf("capture: resolve host %s: %v", key.LocalIP, err)
 				continue
 			}
+			st := p.describe(key, acc, now)
 			records = append(records, store.FlowRecord{
-				HostID:      hostID,
-				Direction:   key.Direction,
-				Proto:       key.Proto,
-				LocalIP:     key.LocalIP,
-				LocalPort:   key.LocalPort,
-				RemoteIP:    key.RemoteIP,
-				RemotePort:  key.RemotePort,
-				FirstSeen:   acc.FirstSeen,
-				LastSeen:    acc.LastSeen,
-				BytesSent:   acc.BytesSent,
-				BytesRecv:   acc.BytesRecv,
-				PacketsSent: acc.PacketsSent,
-				PacketsRecv: acc.PacketsRecv,
+				HostID:        hostID,
+				Direction:     st.direction,
+				Proto:         key.Proto,
+				LocalIP:       key.LocalIP,
+				LocalPort:     key.LocalPort,
+				RemoteIP:      key.RemoteIP,
+				RemotePort:    key.RemotePort,
+				FirstSeen:     acc.FirstSeen,
+				LastSeen:      acc.LastSeen,
+				BytesSent:     acc.BytesSent,
+				BytesRecv:     acc.BytesRecv,
+				PacketsSent:   acc.PacketsSent,
+				PacketsRecv:   acc.PacketsRecv,
+				ServicePort:   st.servicePort,
+				AppProto:      st.app,
+				AppConfidence: st.conf,
 			})
 		}
 		if err := p.db.InsertFlows(records); err != nil {
@@ -135,36 +159,58 @@ func (p *Pipeline) flush() {
 		}
 	}
 
-	p.flushDNS(now)
+	for key, st := range p.convs {
+		if now-st.touched > convIdle {
+			delete(p.convs, key)
+		}
+	}
+
+	p.flushPeerNames()
 	p.flushDHCP()
 }
 
-func (p *Pipeline) flushDNS(now int64) {
-	p.dnsMu.Lock()
-	drained := p.dnsBuf
-	p.dnsBuf = nil
-	p.dnsMu.Unlock()
+// describe works out a conversation's direction, service port and protocol
+// from this window's evidence plus anything remembered from earlier windows.
+// This is where protocol classification happens — at flush time, once per
+// conversation per window, never per packet.
+func (p *Pipeline) describe(key FlowKey, acc *FlowAccum, now int64) *convState {
+	st, known := p.convs[key]
+	if !known {
+		st = &convState{direction: store.DirUnknown}
+		if len(p.convs) < maxConvs {
+			p.convs[key] = st
+		}
+	}
+	st.touched = now
+
+	if !st.handshake {
+		st.direction, st.servicePort = inferRoles(key.Proto, key.LocalPort, key.RemotePort, acc.LocalStarted, acc.RemoteStarted)
+		st.handshake = acc.LocalStarted != acc.RemoteStarted
+	}
+
+	if st.conf < store.ConfPayload {
+		if app, conf := classify(key.Proto, st.servicePort, st.direction, acc.LocalPayload, acc.RemotePayload); conf >= st.conf {
+			st.app, st.conf = app, conf
+		}
+	}
+	return st
+}
+
+func (p *Pipeline) flushPeerNames() {
+	p.namesMu.Lock()
+	drained := p.namesBuf
+	p.namesBuf = nil
+	p.namesMu.Unlock()
 
 	if len(drained) == 0 {
 		return
 	}
-
-	records := make([]store.DNSQueryRecord, 0, len(drained))
-	for _, q := range drained {
-		hostID, err := p.resolveHost(q.LocalIP, now)
-		if err != nil {
-			log.Printf("capture: resolve host %s: %v", q.LocalIP, err)
-			continue
-		}
-		records = append(records, store.DNSQueryRecord{
-			HostID: hostID,
-			QName:  q.QName,
-			QType:  int(q.QType),
-			TS:     q.Timestamp.Unix(),
-		})
+	names := make([]store.PeerName, 0, len(drained))
+	for _, n := range drained {
+		names = append(names, store.PeerName{IP: n.IP, Name: n.Name, LastSeen: n.Timestamp.Unix()})
 	}
-	if err := p.db.InsertDNSQueries(records); err != nil {
-		log.Printf("capture: insert dns queries: %v", err)
+	if err := p.db.UpsertPeerNames(names); err != nil {
+		log.Printf("capture: upsert peer names: %v", err)
 	}
 }
 

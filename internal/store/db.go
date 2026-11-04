@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -12,7 +13,7 @@ import (
 //go:embed schema.sql
 var schemaFS embed.FS
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 // DB holds the writer and reader connections for the ShadowStat database.
 // Writer is limited to a single open connection so all writes are serialized
@@ -103,13 +104,34 @@ func (db *DB) migrate() error {
 		return fmt.Errorf("migrate users.role: %w", err)
 	}
 
-	var count int
-	if err := db.Writer.QueryRow("SELECT COUNT(*) FROM schema_meta").Scan(&count); err != nil {
+	// v2 columns on flows_recent (see schema.sql for their meaning).
+	for _, c := range []struct{ name, typ string }{
+		{"service_port", "INTEGER NOT NULL DEFAULT 0"},
+		{"app_proto", "TEXT NOT NULL DEFAULT ''"},
+		{"app_confidence", "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		if err := db.ensureColumn("flows_recent", c.name, c.typ); err != nil {
+			return fmt.Errorf("migrate flows_recent.%s: %w", c.name, err)
+		}
+	}
+
+	var version int
+	err = db.Writer.QueryRow("SELECT version FROM schema_meta LIMIT 1").Scan(&version)
+	switch {
+	case err == sql.ErrNoRows:
+		// Fresh database: nothing to upgrade.
+		_, err = db.Writer.Exec("INSERT INTO schema_meta (version) VALUES (?)", schemaVersion)
+		if err != nil {
+			return fmt.Errorf("insert schema_meta: %w", err)
+		}
+		return nil
+	case err != nil:
 		return fmt.Errorf("check schema_meta: %w", err)
 	}
-	if count == 0 {
-		if _, err := db.Writer.Exec("INSERT INTO schema_meta (version) VALUES (?)", schemaVersion); err != nil {
-			return fmt.Errorf("insert schema_meta: %w", err)
+
+	if version < 2 {
+		if err := db.migrateV1ToV2(time.Now().Unix()); err != nil {
+			return fmt.Errorf("migrate v1 -> v2: %w", err)
 		}
 	}
 	return nil

@@ -1,33 +1,45 @@
 # ShadowStat
 
-A self-contained Linux network monitoring tool. Captures WAN traffic off a
-mirrored switch port and serves per-host bandwidth statistics, interactive
-historical graphs, and behavioral suspicious-activity detection — all with
-persistent history that survives restarts.
+A self-contained, single-binary Linux WAN traffic monitor. Captures traffic
+off a mirrored switch port and shows, per LAN host, what crosses the WAN link:
+who it talks to, on which ports and protocols, and how much data goes each
+way — with history from the moment each host was first seen. It is not an
+IDS and doesn't try to be one.
 
 ## Status
 
-MVP core plus detection engine, device naming, service install, and
-multi-user settings: live capture → aggregation → durable two-tier SQLite
-storage → authenticated, mobile-friendly HTTPS UI with per-host stats (shown
-by name when known, learned from DHCP), zoomable graphs, and an alerts view
-fed by six behavioral detectors (new destinations, beaconing,
-upload/download ratio, DNS volume/entropy, port scanning, and a
-country-of-origin watchlist backed by an embedded, freely redistributable
-IANA/RIR IP-allocation dataset — no third-party GeoIP account or license
-key). A settings page lets an admin change capture/retention config, toggle
-individual detectors on/off, manage the watchlisted countries, and manage
-additional user accounts — admins get full control, standard users get
-read-only dashboard access. See Roadmap below for what's next.
+Live capture → in-memory aggregation → durable two-tier SQLite storage →
+authenticated, mobile-friendly HTTPS UI:
+
+- **Dashboard:** every LAN host (named from DHCP when known) with bytes sent
+  and received in the last 24h, totals since first seen, top protocols, and
+  a whole-WAN 24h summary.
+- **Host page:** totals since first seen, a zoomable graph (24h / 7d / 30d /
+  since first seen, or drag to zoom), and three tables for the chosen range —
+  *who it talks to* (peer name from DNS answers, IP, country, protocols,
+  ports, who started it, bytes each way), *ports & protocols*, and
+  individual *connections* (last 24h).
+- **Direction is explicit everywhere:** "Sent" is LAN host → internet,
+  "Received" is internet → LAN host, and each conversation is labeled
+  *outbound* (the host started it), *inbound* (the internet side started it)
+  or *unknown*.
+- **Protocol identification** from port numbers plus small, in-tree payload
+  signatures (TLS/HTTPS, HTTP, SSH, SMTP, IMAP, POP3, FTP, RDP, BitTorrent,
+  DNS, NTP, QUIC, STUN, WireGuard). Port-only guesses are marked with "?",
+  and "unknown" is shown as unknown.
+- **Settings** for capture interface, LAN subnet and history retention, plus
+  user management — admins get full control, standard users get read-only
+  access.
 
 ## Roadmap
 
+- **IPv6** — the decoder already parses it, but the capture filter drops it
+  and the LAN side is defined by one IPv4 subnet. Needs a LAN IPv6 prefix
+  setting.
 - **Cert replacement UI** — swap the self-signed cert for a real one (or
   ACME) via the settings page, hot-swapped without a restart.
 - **Pluggable sFlow/NetFlow sources** — `capture.Source` already has the
   seam; only the AF_PACKET implementation exists today.
-- **Blocked-but-trying detector** — needs firewall log integration, not yet
-  scoped.
 
 ## Requirements
 
@@ -125,13 +137,12 @@ there are no config files or environment variables.
 ### Settings & user management
 
 Once logged in as an admin, `/settings` lets you change the capture
-interface/LAN subnet/retention window, toggle any of the five detectors on
-or off individually, and add/remove/reassign user accounts — all
+interface/LAN subnet/history retention and add/remove/reassign user
+accounts — all
 settings-mutating actions require re-entering your password first
 (prompted automatically), even within an already-logged-in session.
-Standard users can view the dashboard, host detail, and alerts pages but
-have no access to `/settings` or any mutating action (including
-acknowledging alerts). The system won't let you delete or demote your own
+Standard users can view the dashboard and host pages but have no access to
+`/settings` or any mutating action. The system won't let you delete or demote your own
 account, or remove the last remaining admin — both would risk locking
 everyone out of settings with no way back in through the UI.
 
@@ -179,6 +190,46 @@ lives in one directory, resolved in this order:
 2. `/var/lib/shadowstat`, if running as root or that path is writable
 3. `$XDG_DATA_HOME/shadowstat`, or `~/.local/share/shadowstat` otherwise
 
+### Upgrading from an earlier version (database schema v2)
+
+The first start of this version upgrades the database in place, in one
+transaction, and only ever adds things (columns, tables):
+
+- Flow rows from the last 24h are relabeled "unknown" direction, because the
+  old format recorded packet direction rather than who started the
+  conversation. New rows are labeled properly.
+- Each host's since-first-seen totals are rebuilt from the existing graph
+  rollups. The host page says from which date the totals count and notes
+  that pre-upgrade history may be incomplete (the old rollup job could miss
+  minutes, and restarts left gaps).
+- The old `alerts`, `known_peers` and `dns_queries` tables are left
+  untouched but are no longer used.
+
+Back up `shadowstat.db` before upgrading. To roll back to the previous
+binary, stop ShadowStat and run (with the `sqlite3` CLI):
+
+```sh
+sqlite3 shadowstat.db "UPDATE schema_meta SET version = 1;"
+```
+
+The old binary then runs normally and ignores the new tables and columns.
+Resetting the version makes the next upgrade re-run the migration, so
+traffic recorded while rolled back isn't double-counted. (Totals are then
+rebuilt from the rollups again; up to a minute or so of traffic around the
+original upgrade can drop out.) To remove the v2
+additions completely (optional, not needed for the old binary):
+
+```sql
+DROP TABLE rollup_state; DROP TABLE host_totals;
+DROP TABLE host_peer_daily; DROP TABLE peer_names;
+ALTER TABLE flows_recent DROP COLUMN service_port;
+ALTER TABLE flows_recent DROP COLUMN app_proto;
+ALTER TABLE flows_recent DROP COLUMN app_confidence;
+```
+
+If you're staying on this version, the old detector data can be removed with
+`DROP TABLE alerts; DROP TABLE known_peers; DROP TABLE dns_queries;`.
+
 ## Command-line reference
 
 `shadowstat` with no subcommand is equivalent to `shadowstat run`.
@@ -210,40 +261,32 @@ pipeline, rollup/retention design, and web API. Short version:
   Ethernet header of its own traffic) and hostname (from DHCP option 12,
   decoded off broadcast DISCOVER/REQUEST packets), so hosts can show up as
   names instead of bare IPs.
+- `internal/capture` (continued) — each conversation is aggregated under
+  one key (protocol + both endpoints, no direction), so a row carries both
+  sent and received bytes. The hot path only notes TCP SYN/SYN-ACK and ICMP
+  echo flags and copies the first ≤256 payload bytes per side; *who started
+  it*, the *service port* and the *application protocol* (`classify.go`) are
+  worked out at flush time and remembered per conversation across flushes.
+  DNS answers seen on the wire map remote IPs to the names hosts looked up.
 - `internal/store` — the only package touching `database/sql`. Two-tier
-  storage: `flows_recent` (full 5-tuple, last 24h) plus `rollup_1m/5m/1h/1d`
-  tables for zoomed-out, long-retention graphing.
-- `internal/rollupjob` — rolls `flows_recent` up into the rollup tables and
-  prunes old data on independent tickers per granularity.
-- `internal/detect` — six periodic detectors reading the same
-  `flows_recent`/`dns_queries` data, writing deduplicated `alerts` rows:
-  **new destinations** (a peer/port not contacted by a host in 30 days —
-  labeled outbound/inbound/bidirectional depending on who actually initiated
-  contact), **beaconing** (suspiciously regular contact intervals with one
-  peer — works on encrypted traffic since it only looks at timing), **exfil
-  ratio** (upload far exceeding download to WAN), **DNS anomaly** (abnormal
-  query volume, or a high-entropy queried domain suggestive of a DGA), and
-  **port scan** (many distinct ports involving one peer in a short window —
-  checked in both directions: this host scanning out, *and* another LAN
-  device scanning this host, which needed LAN-to-LAN traffic to be recorded
-  from both hosts' perspectives, not just the packet's source — see
-  `capture.DecodeResult.Flow2`), and **country watchlist** (a host
-  exchanging traffic with an address allocated to an admin-configured list
-  of ISO country codes — empty by default, since there's no sane
-  site-independent default). Country lookups go through `internal/geoip`, a
-  self-contained IPv4→country table built by `tools/geoip-gen` (run via
-  `make geoip-data`) from the five RIRs' public "delegated-extended"
-  allocation statistics and embedded in the binary via `go:embed` — chosen
-  over MaxMind's GeoLite2 specifically to avoid any account/license-key
-  requirement or redistribution restriction.
+  storage: `flows_recent` (one row per conversation per flush, last 24h)
+  plus `rollup_1m/5m/1h/1d` for graphs, `host_totals` (cumulative per-host
+  counters, never pruned), `host_peer_daily` (per host/day/peer/service
+  breakdown, kept for the retention setting) and `peer_names`.
+- `internal/rollupjob` — once a minute (and at startup), folds every
+  `flows_recent` row newer than a saved watermark into all rollup tiers,
+  `host_totals` and `host_peer_daily` in one transaction, so each row is
+  counted exactly once regardless of timing or restarts; then prunes.
+- `internal/geoip` — a self-contained IPv4→country table built by
+  `tools/geoip-gen` (run via `make geoip-data`) from the five RIRs' public
+  allocation statistics and embedded in the binary, used to show each remote
+  peer's country. No account or license key needed.
 - `internal/web` — HTTPS-only (`net/http` + `crypto/tls`), session auth via
   argon2id-hashed credentials, JSON API driving a vendored uPlot frontend for
-  zoomable graphs from year view down to single-minute detail, an alerts
-  page/API with acknowledge, and a settings page for capture/detector
-  config and user management — gated by two middleware layers
-  (`requireAdmin` for the admin role, `requireElevated`/
-  `requireAdminElevated` for a freshly re-authenticated session) on top of
-  the base `requireSession` check.
+  zoomable graphs, and a settings page for capture config and user
+  management — gated by two middleware layers (`requireAdmin` for the admin
+  role, `requireElevated`/`requireAdminElevated` for a freshly
+  re-authenticated session) on top of the base `requireSession` check.
 - `internal/service` — systemd/OpenRC unit generation, system user creation,
   and dev-to-system data dir migration behind `install-service` /
   `uninstall-service` / `status`.
@@ -258,7 +301,9 @@ from fastest to most realistic:
    SQLite DB. No privileges or hardware needed.
 2. **pcap replay** — `internal/capture.ReplaySource` feeds a `.pcap` file
    through the exact same channel the live AF_PACKET source uses, exercising
-   the full pipeline end-to-end (see `pipeline_test.go`).
+   the full pipeline end-to-end, through the rollup job (see
+   `pipeline_test.go`: HTTPS, QUIC, inbound SSH, ping, DNS naming, unknown
+   UDP, LAN-to-LAN filtering).
 3. **Live smoke test** — `make setcap && ./bin/shadowstat run` against a real
    interface (even just your dev machine's own NIC, non-promiscuous, own
    traffic) exercises the live AF_PACKET + hand-built BPF filter path, the

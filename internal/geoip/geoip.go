@@ -54,8 +54,8 @@ func parseTable(data []byte) []record {
 // if known. Returns ok=false for IPv6 (not yet supported, matching the rest
 // of the capture pipeline), and for addresses with no allocation record —
 // which includes all private/reserved ranges (10.0.0.0/8, 192.168.0.0/16,
-// etc.), since those were never allocated to any country. That's the
-// correct behavior for a detector that should never flag LAN-local traffic.
+// etc.), since those were never allocated to any country. Used to show a
+// country next to each remote peer in the UI.
 func CountryForIP(ip net.IP) (string, bool) {
 	ip4 := ip.To4()
 	if ip4 == nil {

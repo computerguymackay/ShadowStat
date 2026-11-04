@@ -8,9 +8,9 @@ import (
 // ErrNotFound is returned by lookups that find no matching row.
 var ErrNotFound = errors.New("store: not found")
 
-// User roles. Admins can change settings, manage users, toggle detectors,
-// and acknowledge alerts; standard users can only view the dashboard/host
-// detail/alerts pages — no mutating action is available to them.
+// User roles. Admins can change settings and manage users; standard users
+// can only view the dashboard and host pages — no mutating action is
+// available to them.
 const (
 	RoleAdmin    = "admin"
 	RoleStandard = "standard"

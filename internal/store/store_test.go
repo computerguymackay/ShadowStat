@@ -83,14 +83,14 @@ func TestFlowInsertRollupAndSeriesRoundTrip(t *testing.T) {
 
 	records := []FlowRecord{
 		{
-			HostID: hostID, Direction: DirLANToWAN, Proto: 6,
+			HostID: hostID, Direction: DirOutbound, Proto: 6,
 			LocalIP: "192.168.1.50", LocalPort: 1234,
 			RemoteIP: "1.2.3.4", RemotePort: 443,
 			FirstSeen: 30, LastSeen: 45,
 			BytesSent: 1000, BytesRecv: 200, PacketsSent: 5, PacketsRecv: 2,
 		},
 		{
-			HostID: hostID, Direction: DirLANToWAN, Proto: 6,
+			HostID: hostID, Direction: DirOutbound, Proto: 6,
 			LocalIP: "192.168.1.50", LocalPort: 1235,
 			RemoteIP: "5.6.7.8", RemotePort: 443,
 			FirstSeen: 50, LastSeen: 55,
@@ -102,7 +102,7 @@ func TestFlowInsertRollupAndSeriesRoundTrip(t *testing.T) {
 	}
 
 	// Both flows fall in the [0,60) minute bucket.
-	if err := db.RollupFromFlowsRecent(0, 60); err != nil {
+	if _, err := db.RunRollup(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -117,12 +117,12 @@ func TestFlowInsertRollupAndSeriesRoundTrip(t *testing.T) {
 		t.Errorf("bucket totals = sent=%d recv=%d, want sent=1500 recv=300", points[0].BytesSent, points[0].BytesRecv)
 	}
 
-	flows, err := db.HostFlows(hostID, 0, 60, 10)
+	flows, err := db.HostConversations(hostID, 0, 60, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(flows) != 2 {
-		t.Fatalf("expected 2 flow detail rows, got %d", len(flows))
+		t.Fatalf("expected 2 conversations, got %d", len(flows))
 	}
 }
 
@@ -409,92 +409,5 @@ func TestUserRoleManagement(t *testing.T) {
 	}
 	if len(users) != 1 {
 		t.Fatalf("expected 1 user remaining, got %d", len(users))
-	}
-}
-
-func TestDetectorEnabledDefaultsAndOverride(t *testing.T) {
-	db := openTestDB(t)
-
-	if !db.DetectorEnabled(KeyDetectorPortScan) {
-		t.Error("expected detector to default to enabled when unset")
-	}
-
-	if err := db.SetSetting(KeyDetectorPortScan, "0"); err != nil {
-		t.Fatal(err)
-	}
-	if db.DetectorEnabled(KeyDetectorPortScan) {
-		t.Error("expected detector to be disabled after setting 0")
-	}
-
-	if err := db.SetSetting(KeyDetectorPortScan, "1"); err != nil {
-		t.Fatal(err)
-	}
-	if !db.DetectorEnabled(KeyDetectorPortScan) {
-		t.Error("expected detector to be enabled after setting 1")
-	}
-}
-
-func TestAcknowledgeAllAlerts(t *testing.T) {
-	db := openTestDB(t)
-
-	hostID, err := db.UpsertHost("192.168.1.50", 1000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 5; i++ {
-		if err := db.InsertAlert(AlertRecord{
-			HostID: hostID, Kind: AlertKindNewDestination, Severity: SeverityInfo,
-			Summary: "test", DedupeKey: string(rune('a' + i)), DetectedAt: 1000,
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := db.InsertAlert(AlertRecord{
-		HostID: hostID, Kind: AlertKindPortScan, Severity: SeverityCritical,
-		Summary: "test", DedupeKey: "scan", DetectedAt: 1000,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	// Acknowledging one kind only clears that kind.
-	n, err := db.AcknowledgeAllAlerts(AlertKindNewDestination)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != 5 {
-		t.Fatalf("acknowledged %d alerts, want 5", n)
-	}
-
-	unacked, err := db.ListAlerts(100, true, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(unacked) != 1 || unacked[0].Kind != AlertKindPortScan {
-		t.Fatalf("expected only the port_scan alert left unacknowledged, got %+v", unacked)
-	}
-
-	// kind filter on ListAlerts narrows results regardless of ack state.
-	filtered, err := db.ListAlerts(100, false, AlertKindNewDestination)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(filtered) != 5 {
-		t.Fatalf("expected 5 new_destination alerts, got %d", len(filtered))
-	}
-
-	// Acknowledging all (no kind filter) clears the rest.
-	n, err = db.AcknowledgeAllAlerts("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != 1 {
-		t.Fatalf("acknowledged %d alerts, want 1", n)
-	}
-	unacked, err = db.ListAlerts(100, true, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(unacked) != 0 {
-		t.Fatalf("expected no unacknowledged alerts left, got %+v", unacked)
 	}
 }

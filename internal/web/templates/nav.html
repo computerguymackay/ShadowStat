@@ -3,10 +3,7 @@
   <div class="topbar-left">
     <a class="brand" href="/">ShadowStat</a>
     <nav class="nav-links">
-      <a href="/" class="nav-link{{if and (not .OnAlertsPage) (not .Breadcrumb)}} active{{end}}">Hosts</a>
-      <a href="/alerts" class="nav-link{{if .OnAlertsPage}} active{{end}}">
-        Alerts{{if .UnackedAlerts}}<span class="badge">{{.UnackedAlerts}}</span>{{end}}
-      </a>
+      <a href="/" class="nav-link{{if not .Breadcrumb}} active{{end}}">Hosts</a>
       {{if .IsAdmin}}<a href="/settings" class="nav-link{{if .OnSettingsPage}} active{{end}}">Settings</a>{{end}}
     </nav>
     {{if .Breadcrumb}}<span class="crumb-sep" aria-hidden="true">/</span><span class="crumb">{{.Breadcrumb}}</span>{{end}}

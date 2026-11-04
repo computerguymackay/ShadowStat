@@ -20,7 +20,6 @@ func newRouter(db *store.DB, sessions *auth.Manager) http.Handler {
 	mux.HandleFunc("GET /login", pages.login)
 	mux.HandleFunc("GET /{$}", requireSession(sessions, false, pages.dashboard))
 	mux.HandleFunc("GET /hosts/{id}", requireSession(sessions, false, pages.hostDetail))
-	mux.HandleFunc("GET /alerts", requireSession(sessions, false, pages.alerts))
 	mux.HandleFunc("GET /settings", requireAdmin(sessions, false, pages.settings))
 
 	// Auth API.
@@ -32,13 +31,11 @@ func newRouter(db *store.DB, sessions *auth.Manager) http.Handler {
 	// dashboards, just not mutate anything).
 	mux.HandleFunc("GET /api/hosts", requireSession(sessions, true, api.listHosts))
 	mux.HandleFunc("GET /api/hosts/{id}/series", requireSession(sessions, true, api.hostSeries))
+	mux.HandleFunc("GET /api/hosts/{id}/totals", requireSession(sessions, true, api.hostTotals))
+	mux.HandleFunc("GET /api/hosts/{id}/breakdown", requireSession(sessions, true, api.hostBreakdown))
 	mux.HandleFunc("GET /api/hosts/{id}/flows", requireSession(sessions, true, api.hostFlows))
-	mux.HandleFunc("GET /api/hosts/{id}/alerts", requireSession(sessions, true, api.hostAlerts))
-	mux.HandleFunc("GET /api/alerts", requireSession(sessions, true, api.listAlerts))
 
 	// Admin-only mutations and settings/user management.
-	mux.HandleFunc("POST /api/alerts/{id}/ack", requireAdmin(sessions, true, api.ackAlert))
-	mux.HandleFunc("POST /api/alerts/ack-all", requireAdmin(sessions, true, api.ackAllAlerts))
 	mux.HandleFunc("GET /api/settings", requireAdmin(sessions, true, api.getSettings))
 	mux.HandleFunc("PUT /api/settings", requireAdminElevated(sessions, api.putSettings))
 	mux.HandleFunc("GET /api/interfaces", requireAdmin(sessions, true, api.listInterfaces))

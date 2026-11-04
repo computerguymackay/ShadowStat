@@ -1,4 +1,8 @@
--- ShadowStat schema (version 1)
+-- ShadowStat schema (version 2)
+--
+-- Every statement is CREATE ... IF NOT EXISTS, so this file is safe to run
+-- against any existing database. Columns added to an existing table after
+-- v1 are added by migrate() in db.go, not here.
 
 CREATE TABLE IF NOT EXISTS schema_meta (
     version     INTEGER NOT NULL
@@ -49,6 +53,14 @@ CREATE TABLE IF NOT EXISTS dhcp_hostnames (
 );
 
 -- ── Tier 1: full-fidelity recent flows (last 24h working set) ───────
+-- One row per conversation per flush interval, from the LAN host's side.
+--   direction:      who started the conversation (see DirOutbound etc. in
+--                   flows.go). Rows written before schema v2 hold 4 (unknown).
+--   bytes_sent:     LAN host -> internet.   bytes_recv: internet -> LAN host.
+--   service_port:   the server-side port (e.g. 443), so random client ports
+--                   collapse into one service. 0 for port-less protocols.
+--   app_proto:      application protocol label ('' = unknown).
+--   app_confidence: 0 unknown, 1 guessed from port, 2 payload signature.
 CREATE TABLE IF NOT EXISTS flows_recent (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     host_id         INTEGER NOT NULL REFERENCES hosts(id),
@@ -63,7 +75,10 @@ CREATE TABLE IF NOT EXISTS flows_recent (
     bytes_sent      INTEGER NOT NULL DEFAULT 0,
     bytes_recv      INTEGER NOT NULL DEFAULT 0,
     packets_sent    INTEGER NOT NULL DEFAULT 0,
-    packets_recv    INTEGER NOT NULL DEFAULT 0
+    packets_recv    INTEGER NOT NULL DEFAULT 0,
+    service_port    INTEGER NOT NULL DEFAULT 0,
+    app_proto       TEXT NOT NULL DEFAULT '',
+    app_confidence  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_flows_recent_host_time ON flows_recent(host_id, last_seen);
 CREATE INDEX IF NOT EXISTS idx_flows_recent_lastseen  ON flows_recent(last_seen);
@@ -118,47 +133,55 @@ CREATE TABLE IF NOT EXISTS rollup_1d (
 );
 CREATE INDEX IF NOT EXISTS idx_rollup_1d_time ON rollup_1d(bucket_ts);
 
--- ── Detection engine ─────────────────────────────────────────────────
+-- ── Long-term history (schema v2) ────────────────────────────────────
 
--- Every distinct (host, remote peer) pair ever confirmed as "known", used by
--- the new-destination detector to recognize a peer not contacted in the
--- trailing novelty window (as opposed to a peer never seen at all).
-CREATE TABLE IF NOT EXISTS known_peers (
-    host_id     INTEGER NOT NULL REFERENCES hosts(id),
-    remote_ip   TEXT NOT NULL,
-    remote_port INTEGER NOT NULL,
-    first_seen  INTEGER NOT NULL,
-    last_seen   INTEGER NOT NULL,
-    PRIMARY KEY (host_id, remote_ip, remote_port)
+-- Progress markers for the rollup job. 'flows_recent_id' is the highest
+-- flows_recent.id already folded into every rollup tier, host_totals and
+-- host_peer_daily, so each flows_recent row is counted exactly once.
+CREATE TABLE IF NOT EXISTS rollup_state (
+    name  TEXT PRIMARY KEY,
+    value INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_known_peers_last_seen ON known_peers(last_seen);
 
--- Individual DNS queries observed on the WAN-crossing capture interface.
--- Short-retention (pruned separately from the main flow/rollup tiers) — this
--- exists purely to feed the DNS volume/entropy detector, not for historical
--- browsing.
-CREATE TABLE IF NOT EXISTS dns_queries (
-    id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    host_id INTEGER NOT NULL REFERENCES hosts(id),
-    qname   TEXT NOT NULL,
-    qtype   INTEGER NOT NULL,
-    ts      INTEGER NOT NULL
+-- Cumulative per-host counters since the host was first seen. Never pruned.
+-- totals_since is the earliest data the counters include. exact_since is
+-- when exact counting began: NULL for hosts first seen after the v2 upgrade,
+-- otherwise the upgrade time (totals before it were backfilled from rollups
+-- and may be incomplete).
+CREATE TABLE IF NOT EXISTS host_totals (
+    host_id      INTEGER PRIMARY KEY REFERENCES hosts(id),
+    bytes_sent   INTEGER NOT NULL DEFAULT 0,
+    bytes_recv   INTEGER NOT NULL DEFAULT 0,
+    packets_sent INTEGER NOT NULL DEFAULT 0,
+    packets_recv INTEGER NOT NULL DEFAULT 0,
+    totals_since INTEGER NOT NULL,
+    exact_since  INTEGER
 );
-CREATE INDEX IF NOT EXISTS idx_dns_queries_host_ts ON dns_queries(host_id, ts);
-CREATE INDEX IF NOT EXISTS idx_dns_queries_ts ON dns_queries(ts);
 
--- Alerts raised by the detection engine.
-CREATE TABLE IF NOT EXISTS alerts (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+-- Per-host, per-UTC-day breakdown by remote peer and service, kept for
+-- retention_days. Per-port and per-protocol views are GROUP BYs over this.
+CREATE TABLE IF NOT EXISTS host_peer_daily (
     host_id      INTEGER NOT NULL REFERENCES hosts(id),
-    kind         TEXT NOT NULL,
-    severity     TEXT NOT NULL,
-    summary      TEXT NOT NULL,
-    detail       TEXT,
-    dedupe_key   TEXT NOT NULL,
-    detected_at  INTEGER NOT NULL,
-    acknowledged INTEGER NOT NULL DEFAULT 0
+    day          INTEGER NOT NULL, -- unix seconds at 00:00 UTC
+    remote_ip    TEXT NOT NULL,
+    proto        INTEGER NOT NULL,
+    service_port INTEGER NOT NULL,
+    app_proto    TEXT NOT NULL,
+    direction    INTEGER NOT NULL,
+    app_confidence INTEGER NOT NULL DEFAULT 0, -- highest seen for this row
+    bytes_sent   INTEGER NOT NULL DEFAULT 0,
+    bytes_recv   INTEGER NOT NULL DEFAULT 0,
+    packets_sent INTEGER NOT NULL DEFAULT 0,
+    packets_recv INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (host_id, day, remote_ip, proto, service_port, app_proto, direction)
 );
-CREATE INDEX IF NOT EXISTS idx_alerts_detected_at ON alerts(detected_at);
-CREATE INDEX IF NOT EXISTS idx_alerts_host ON alerts(host_id, detected_at);
-CREATE INDEX IF NOT EXISTS idx_alerts_dedupe ON alerts(host_id, kind, dedupe_key, detected_at);
+CREATE INDEX IF NOT EXISTS idx_host_peer_daily_day ON host_peer_daily(day);
+
+-- Hostnames for remote IPs, learned passively from DNS answers seen on the
+-- capture interface. One IP can serve many names (CDNs); the latest wins.
+CREATE TABLE IF NOT EXISTS peer_names (
+    ip        TEXT PRIMARY KEY,
+    name      TEXT NOT NULL,
+    last_seen INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_peer_names_last_seen ON peer_names(last_seen);

@@ -3,11 +3,14 @@ package web
 import (
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
 	"ShadowStat/internal/auth"
+	"ShadowStat/internal/geoip"
 	"ShadowStat/internal/store"
 )
 
@@ -100,14 +103,26 @@ func clearSessionCookie(w http.ResponseWriter) {
 
 // --- hosts ----------------------------------------------------------------
 
-const sparklineWindow = 60 * time.Minute
+const (
+	sparklineWindow = 60 * time.Minute
+	day             = 24 * 60 * 60 // seconds
+	topProtocolsN   = 3
+	breakdownLimit  = 100
+)
 
 type hostSummary struct {
-	ID          int64          `json:"id"`
-	IP          string         `json:"ip"`
-	DisplayName string         `json:"display_name,omitempty"`
-	LastSeen    int64          `json:"last_seen"`
-	Sparkline   []seriesPointJ `json:"sparkline"`
+	ID           int64          `json:"id"`
+	IP           string         `json:"ip"`
+	DisplayName  string         `json:"display_name,omitempty"`
+	FirstSeen    int64          `json:"first_seen"`
+	LastSeen     int64          `json:"last_seen"`
+	Sent24h      int64          `json:"sent_24h"`
+	Recv24h      int64          `json:"recv_24h"`
+	TotalSent    int64          `json:"total_sent"`
+	TotalRecv    int64          `json:"total_recv"`
+	TotalsSince  int64          `json:"totals_since,omitempty"`
+	TopProtocols []string       `json:"top_protocols"`
+	Sparkline    []seriesPointJ `json:"sparkline"`
 }
 
 type seriesPointJ struct {
@@ -116,6 +131,8 @@ type seriesPointJ struct {
 	Recv int64 `json:"recv"`
 }
 
+// listHosts serves the dashboard: every LAN host with its last-24h and
+// since-first-seen traffic, busiest first, plus a whole-WAN 24h summary.
 func (h *apiHandlers) listHosts(w http.ResponseWriter, r *http.Request) {
 	hosts, err := h.db.ListHosts()
 	if err != nil {
@@ -124,36 +141,124 @@ func (h *apiHandlers) listHosts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().Unix()
-	from := now - int64(sparklineWindow.Seconds())
+	recent, err := h.db.HostTrafficSince(now - day)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
+	totals, err := h.db.AllHostTotals()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
+	// Day buckets that overlap the last 24h: yesterday (UTC) and today.
+	top, err := h.db.TopProtocols(((now-day)/day)*day, topProtocolsN)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
 
+	var wan store.ByteCounts
 	out := make([]hostSummary, 0, len(hosts))
 	for _, host := range hosts {
-		points, err := h.db.SparklineSeries(host.ID, from, now)
+		points, err := h.db.SparklineSeries(host.ID, now-int64(sparklineWindow.Seconds()), now)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "internal_error")
 			return
 		}
+		rc, t := recent[host.ID], totals[host.ID]
+		wan.Sent += rc.Sent
+		wan.Recv += rc.Recv
+		protos := top[host.ID]
+		if protos == nil {
+			protos = []string{}
+		}
 		out = append(out, hostSummary{
-			ID:          host.ID,
-			IP:          host.IP,
-			DisplayName: host.DisplayName.String,
-			LastSeen:    host.LastSeen,
-			Sparkline:   toSeriesJSON(points),
+			ID:           host.ID,
+			IP:           host.IP,
+			DisplayName:  host.DisplayName.String,
+			FirstSeen:    host.FirstSeen,
+			LastSeen:     host.LastSeen,
+			Sent24h:      rc.Sent,
+			Recv24h:      rc.Recv,
+			TotalSent:    t.BytesSent,
+			TotalRecv:    t.BytesRecv,
+			TotalsSince:  t.TotalsSince,
+			TopProtocols: protos,
+			Sparkline:    toSeriesJSON(points),
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"hosts": out})
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].Sent24h+out[i].Recv24h > out[j].Sent24h+out[j].Recv24h
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"hosts":   out,
+		"summary": map[string]int64{"sent_24h": wan.Sent, "recv_24h": wan.Recv},
+	})
+}
+
+// hostTotals returns a host's cumulative counters since it was first seen.
+func (h *apiHandlers) hostTotals(w http.ResponseWriter, r *http.Request) {
+	hostID, ok := parseIDParam(r)
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "invalid_host_id")
+		return
+	}
+	host, err := h.db.HostByID(hostID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSONError(w, http.StatusNotFound, "not_found")
+		return
+	} else if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
+	t, _, err := h.db.HostTotalsByID(hostID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
+	resp := map[string]any{
+		"first_seen":   host.FirstSeen,
+		"last_seen":    host.LastSeen,
+		"bytes_sent":   t.BytesSent,
+		"bytes_recv":   t.BytesRecv,
+		"packets_sent": t.PacketsSent,
+		"packets_recv": t.PacketsRecv,
+		"totals_since": t.TotalsSince,
+	}
+	if t.ExactSince.Valid {
+		resp["exact_since"] = t.ExactSince.Int64
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// hostBreakdown returns who a host talked to, and on which ports and
+// protocols, over [from, to].
+func (h *apiHandlers) hostBreakdown(w http.ResponseWriter, r *http.Request) {
+	hostID, ok := parseIDParam(r)
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "invalid_host_id")
+		return
+	}
+	from, to, ok := parseRange(r)
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "invalid_range")
+		return
+	}
+	b, err := h.db.HostBreakdown(hostID, from, to, time.Now().Unix()-day, breakdownLimit)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
+	for i := range b.Peers {
+		if ip := net.ParseIP(b.Peers[i].RemoteIP); ip != nil {
+			b.Peers[i].Country, _ = geoip.CountryForIP(ip)
+		}
+	}
+	writeJSON(w, http.StatusOK, b)
 }
 
 // --- series (the core zoomable graph endpoint) -----------------------------
-
-// granularity thresholds, in seconds, for picking which table to query based
-// on the requested [from,to] range. See plan §6 for rationale.
-const (
-	rangeFlowsRecentMax = 24 * int64(time.Hour/time.Second)
-	range1mMax          = 10 * 24 * int64(time.Hour/time.Second)
-	range5mMax          = 90 * 24 * int64(time.Hour/time.Second)
-	range1hMax          = 2 * 365 * 24 * int64(time.Hour/time.Second)
-)
 
 func (h *apiHandlers) hostSeries(w http.ResponseWriter, r *http.Request) {
 	hostID, ok := parseIDParam(r)
@@ -171,38 +276,22 @@ func (h *apiHandlers) hostSeries(w http.ResponseWriter, r *http.Request) {
 	direction := -1
 	if dStr := r.URL.Query().Get("direction"); dStr != "" {
 		d, err := strconv.Atoi(dStr)
-		if err != nil || d < 0 || d > 3 {
+		if err != nil || (d != store.DirOutbound && d != store.DirInbound && d != store.DirUnknown) {
 			writeJSONError(w, http.StatusBadRequest, "invalid_direction")
 			return
 		}
 		direction = d
 	}
 
-	span := to - from
-	now := time.Now().Unix()
-
+	granularity := store.ChooseSeriesTier(from, to, time.Now().Unix(), h.retentionDays())
 	var (
-		points      []store.SeriesPoint
-		err         error
-		granularity string
+		points []store.SeriesPoint
+		err    error
 	)
-
-	switch {
-	case span <= rangeFlowsRecentMax && to >= now-rangeFlowsRecentMax:
-		granularity = "raw"
+	if granularity == "raw" {
 		points, err = h.db.HostSeriesFromFlowsRecent(hostID, from, to, direction)
-	case span <= range1mMax:
-		granularity = "1m"
-		points, err = h.db.HostSeriesFromRollup("1m", hostID, from, to, direction)
-	case span <= range5mMax:
-		granularity = "5m"
-		points, err = h.db.HostSeriesFromRollup("5m", hostID, from, to, direction)
-	case span <= range1hMax:
-		granularity = "1h"
-		points, err = h.db.HostSeriesFromRollup("1h", hostID, from, to, direction)
-	default:
-		granularity = "1d"
-		points, err = h.db.HostSeriesFromRollup("1d", hostID, from, to, direction)
+	} else {
+		points, err = h.db.HostSeriesFromRollup(granularity, hostID, from, to, direction)
 	}
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal_error")
@@ -215,8 +304,20 @@ func (h *apiHandlers) hostSeries(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// --- flows detail -----------------------------------------------------------
+// retentionDays reads the retention setting, falling back to the default.
+func (h *apiHandlers) retentionDays() int {
+	if v, ok, err := h.db.GetSetting(store.KeyRetentionDays); err == nil && ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 30
+}
 
+// --- conversations ------------------------------------------------------
+
+// hostFlows returns a host's individual conversations. Only the last 24h is
+// kept at this detail; older ranges are rejected.
 func (h *apiHandlers) hostFlows(w http.ResponseWriter, r *http.Request) {
 	hostID, ok := parseIDParam(r)
 	if !ok {
@@ -228,24 +329,26 @@ func (h *apiHandlers) hostFlows(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_range")
 		return
 	}
-	if time.Now().Unix()-to > rangeFlowsRecentMax {
+	now := time.Now().Unix()
+	if to < now-day {
 		writeJSONError(w, http.StatusBadRequest, "range_too_old_for_flow_detail")
 		return
 	}
+	from = max(from, now-day)
 
-	limit := 500
+	limit := 200
 	if lStr := r.URL.Query().Get("limit"); lStr != "" {
 		if l, err := strconv.Atoi(lStr); err == nil && l > 0 && l <= 5000 {
 			limit = l
 		}
 	}
 
-	flows, err := h.db.HostFlows(hostID, from, to, limit)
+	convs, err := h.db.HostConversations(hostID, from, to, limit)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal_error")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"flows": flows})
+	writeJSON(w, http.StatusOK, map[string]any{"flows": convs})
 }
 
 // --- settings -----------------------------------------------------------

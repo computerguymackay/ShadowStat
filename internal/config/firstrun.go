@@ -152,12 +152,12 @@ func promptSubnet(reader *bufio.Reader) (string, error) {
 }
 
 func promptRetention(reader *bufio.Reader) (int, error) {
-	fmt.Println("\nRetention window:")
+	fmt.Println("\nKeep per-peer / per-port history for (graphs and per-host totals are kept regardless):")
 	for i, c := range retentionChoices {
 		fmt.Printf("  %d) %s\n", i+1, c.Label)
 	}
 	for {
-		fmt.Print("Select retention window [2]: ")
+		fmt.Print("Select [2]: ")
 		line, err := readLine(reader)
 		if err != nil {
 			return 0, err

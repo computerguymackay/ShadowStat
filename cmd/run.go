@@ -14,7 +14,6 @@ import (
 	"ShadowStat/internal/auth"
 	"ShadowStat/internal/capture"
 	"ShadowStat/internal/config"
-	"ShadowStat/internal/detect"
 	"ShadowStat/internal/rollupjob"
 	"ShadowStat/internal/store"
 	"ShadowStat/internal/web"
@@ -100,7 +99,6 @@ func runCmd(args []string) int {
 
 	pipeline := capture.NewPipeline(db, src, lan, time.Duration(settings.FlushInterval)*time.Second)
 	scheduler := rollupjob.New(db, settings.RetentionDays)
-	detection := detect.New(db)
 	sessions := auth.NewManager(db)
 
 	server, err := web.NewServer(settings.HTTPListenAddr, certPath, keyPath, db, sessions)
@@ -134,12 +132,6 @@ func runCmd(args []string) int {
 	go func() {
 		defer wg.Done()
 		scheduler.Run(ctx)
-	}()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		detection.Run(ctx)
 	}()
 
 	wg.Add(1)
