@@ -123,8 +123,11 @@ func (d *Decoder) Decode(pkt RawPacket) DecodeResult {
 	}
 
 	// DHCP DISCOVER/REQUEST traffic (src 0.0.0.0 and/or broadcast dst) has no
-	// meaningful per-host flow to record.
-	if srcIP.IsUnspecified() || dstIP.Equal(net.IPv4bcast) {
+	// meaningful per-host flow to record. Multicast (mDNS, SSDP, ...) and
+	// link-local addresses never leave the LAN, so they aren't WAN traffic
+	// even though they fall outside the LAN subnet.
+	if srcIP.IsUnspecified() || dstIP.Equal(net.IPv4bcast) ||
+		dstIP.IsMulticast() || srcIP.IsLinkLocalUnicast() || dstIP.IsLinkLocalUnicast() {
 		return result
 	}
 

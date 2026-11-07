@@ -248,6 +248,27 @@ func TestDecodeIgnoresLANToLANTraffic(t *testing.T) {
 	}
 }
 
+// Found by the live smoke test: mDNS announcements to 224.0.0.251 were
+// recorded as internet traffic.
+func TestDecodeIgnoresMulticastAndLinkLocal(t *testing.T) {
+	_, lan, _ := net.ParseCIDR("192.168.1.0/24")
+	d := NewDecoder(lan)
+
+	a, _ := net.ParseMAC("aa:bb:cc:dd:ee:01")
+	b, _ := net.ParseMAC("01:00:5e:00:00:fb")
+	for _, c := range []struct{ name, src, dst string }{
+		{"mDNS", "192.168.1.60", "224.0.0.251"},
+		{"SSDP", "192.168.1.60", "239.255.255.250"},
+		{"link-local peer", "192.168.1.60", "169.254.10.20"},
+		{"from link-local", "169.254.10.20", "192.168.1.60"},
+	} {
+		data := synthTCPPacket(t, a, b, net.ParseIP(c.src), net.ParseIP(c.dst), 5353, 5353, nil)
+		if res := d.Decode(RawPacket{Data: data, Timestamp: time.Unix(1000, 0)}); res.HasFlow {
+			t.Errorf("%s: expected no flow, got %+v", c.name, res.Flow)
+		}
+	}
+}
+
 func synthVLANTCPPacket(t *testing.T, vlanID uint16, srcMAC, dstMAC net.HardwareAddr, srcIP, dstIP net.IP, srcPort, dstPort uint16) []byte {
 	t.Helper()
 
